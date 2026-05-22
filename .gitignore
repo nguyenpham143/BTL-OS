@@ -15,9 +15,10 @@ os
 # .DS_Store
 .DS_Store
 
-# log files
+# log file + lst
 *.txt
 *.log
+*.lst
 
 # .vscode
 .vscode
