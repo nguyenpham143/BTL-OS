@@ -121,7 +121,8 @@ struct pcb_t
 	struct memphy_struct *mram;
 	struct memphy_struct **mswp;
 	struct memphy_struct *active_mswp;
-#endif	
+	uint32_t active_mswp_id;
+#endif
 	struct page_table_t *page_table; // Page table
 	uint32_t bp;			 // Break pointer
 };
