@@ -6,7 +6,6 @@ obj/
 # executable
 os
 *.out
-*.output
 
 # debug files
 *.dSYM/
