@@ -18,3 +18,6 @@ os
 # log files
 *.txt
 *.log
+
+# .vscode
+.vscode
