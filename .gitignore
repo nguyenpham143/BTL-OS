@@ -1,0 +1,12 @@
+# object files
+obj/
+*.o
+*.obj
+
+# executable
+os
+*.out
+
+# debug files
+*.dSYM/
+*.log
