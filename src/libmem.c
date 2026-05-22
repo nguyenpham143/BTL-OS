@@ -271,8 +271,8 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 
     /* TODO Initialize the target frame storing our variable */
     addr_t tgtfpn;
-
-    if (MEMPHY_get_freefp(caller->krnl->mram, &tgtfpn) < 0) {
+    // Check if RAM is full or not
+    if (MEMPHY_get_freefp(caller->krnl->mram, &tgtfpn) == -1) {
     /* TODO: Play with your paging theory here */
     /* Find victim page */
       if (find_victim_page(mm, &vicpgn) < 0)
@@ -284,7 +284,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
       vicfpn = PAGING_FPN(vicpte);
 
     /* Get free frame in MEMSWP */
-      if (MEMPHY_get_freefp(caller->krnl->active_mswp, &swpfpn) < 0)
+      if (MEMPHY_get_freefp(caller->krnl->active_mswp, &swpfpn) == -1)
       {
         return -1;
       } 
@@ -312,8 +312,8 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
     addr_t swpfpn = PAGING_PTE_SWP(pte);
     addr_t tgtfpn;
 
-    if (MEMPHY_get_freefp(caller->krnl->mram, &tgtfpn) < 0) {
-      /* RAM đầy: phải evict victim trước */
+    // Check if RAM is full or not
+    if (MEMPHY_get_freefp(caller->krnl->mram, &tgtfpn) == -1) {
       addr_t vicpgn;
       uint32_t vicpte;
       addr_t vicfpn;
@@ -329,6 +329,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 
       vicfpn = PAGING_FPN(vicpte);
 
+      // check if SWAP is full or not
       if (MEMPHY_get_freefp(caller->krnl->active_mswp, &new_swpfpn) == -1)
         return -1;
 
@@ -338,14 +339,14 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
       /* update page table of victim */
       pte_set_swap(caller, vicpgn, caller->krnl->active_mswp_id, new_swpfpn);
 
-      tgtfpn = vicfpn; /* tái dùng frame của victim */
+      tgtfpn = vicfpn;
     }
 
-    /* SWP(swpfpn <-> tgtfpn): copy page từ SWAP vào RAM */
+    /* SWP(swpfpn <-> tgtfpn) */
     __swap_cp_page(caller->krnl->active_mswp, swpfpn, caller->krnl->mram, tgtfpn);
     MEMPHY_put_freefp(caller->krnl->active_mswp, swpfpn);
 
-    /* Update PTE: page giờ ở RAM */
+    /* Update PTE */
     pte_set_fpn(caller, pgn, tgtfpn);
     enlist_pgn_node(&mm->fifo_pgn, pgn);
   }
