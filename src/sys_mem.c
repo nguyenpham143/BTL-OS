@@ -30,9 +30,8 @@ int __sys_memmap(struct krnl_t *krnl, uint32_t pid, struct sc_regs* regs)
    /* TODO THIS DUMMY CREATE EMPTY PROC TO AVOID COMPILER NOTIFY 
     *      need to be eliminated
 	*/
-//  struct pcb_t *caller = malloc(sizeof(struct pcb_t));
-//  caller->krnl = malloc(sizeof(struct krnl_t));
-    struct pcb_t *caller = NULL;
+   struct pcb_t *caller = malloc(sizeof(struct pcb_t));
+   caller->krnl = malloc(sizeof(struct krnl_t));
 
    /*
     * @bksysnet: Please note in the dual spacing design
@@ -42,36 +41,7 @@ int __sys_memmap(struct krnl_t *krnl, uint32_t pid, struct sc_regs* regs)
    /* TODO: Traverse proclist to terminate the proc
     *       stcmp to check the process match proc_name
     */
-   struct queue_t *running_list = krnl->running_list;
-   if (running_list != NULL) {
-       int i;
-       for (i = 0; i < running_list->size; i++) {
-           if (running_list->proc[i] != NULL && running_list->proc[i]->pid == pid) {
-               caller = running_list->proc[i];
-               break;
-           }
-       }
-   }
-
-#ifdef MLQ_SCHED
-   if (caller == NULL && krnl->mlq_ready_queue != NULL) {
-       int p, i;
-       for (p = 0; p < MAX_PRIO && caller == NULL; p++) {
-           struct queue_t *q = &krnl->mlq_ready_queue[p];
-           for (i = 0; i < q->size; i++) {
-               if (q->proc[i] != NULL && q->proc[i]->pid == pid) {
-                   caller = q->proc[i];
-                   break;
-               }
-           }
-       }
-   }
-#endif
-
-   if (caller == NULL) {
-       printf("__sys_memmap: pid not found\n", pid);
-       return -1;
-   }
+//	struct queue_t *running_list = krnl->running_list;
 
     /* TODO Maching and marking the process */
     /* user process are not allowed to access directly pcb in kernel space of syscall */

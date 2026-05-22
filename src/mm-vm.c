@@ -15,7 +15,7 @@
  */
 
 #include "string.h"
-#include "mm64.h"
+#include "mm.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -91,6 +91,8 @@ struct vm_rg_struct *get_vm_area_node_at_brk(struct pcb_t *caller, int vmaid, ad
  */
 int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, addr_t vmaend)
 {
+  //struct vm_area_struct *vma = caller->krnl->mm->mmap;
+
   /* TODO validate the planned memory area is not overlapped */
   if (vmastart >= vmaend)
   {
@@ -104,6 +106,7 @@ int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, a
   }
 
   /* TODO validate the planned memory area is not overlapped */
+
   struct vm_area_struct *cur_area = get_vma_by_num(caller->krnl->mm, vmaid);
   if (cur_area == NULL)
   {
@@ -112,7 +115,7 @@ int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, a
 
   while (vma != NULL)
   {
-    if (vma != cur_area && OVERLAP(vmastart, vmaend, vma->vm_start, vma->vm_end))
+    if (vma != cur_area && OVERLAP(cur_area->vm_start, cur_area->vm_end, vma->vm_start, vma->vm_end))
     {
       return -1;
     }
@@ -131,37 +134,22 @@ int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, a
  */
 int inc_vma_limit(struct pcb_t *caller, int vmaid, addr_t inc_sz)
 {
-  struct vm_rg_struct *newrg = malloc(sizeof(struct vm_rg_struct));
+  //struct vm_rg_struct * newrg = malloc(sizeof(struct vm_rg_struct));
 
-  /* TODO with new address scheme, the size need to be aligned 
+  /* TOTO with new address scheme, the size need tobe aligned 
    *      the raw inc_sz maybe not fit pagesize
    */ 
-  addr_t inc_amt = PAGING64_PAGE_ALIGNSZ(inc_sz);
-  int incnumpage = inc_amt / PAGING64_PAGESZ;
+  //addr_t inc_amt;
 
-  struct vm_area_struct *cur_vma = get_vma_by_num(caller->krnl->mm, vmaid);
-  if (cur_vma == NULL)
-  {
-    free(newrg);
-    return -1;
-  }
-
-  addr_t old_end = cur_vma->vm_end;
+//  int incnumpage =  inc_amt / PAGING_PAGESZ;
 
   /* TODO Validate overlap of obtained region */
-  if (validate_overlap_vm_area(caller, vmaid, newrg->rg_start, newrg->rg_end) < 0)
-  {
-    free(newrg);
-    return -1;
-  }
+  //if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0)
+  //  return -1; /*Overlap and failed allocation */
 
   /* TODO: Obtain the new vm area based on vmaid */
-  cur_vma->vm_end += inc_amt;
-  cur_vma->sbrk += inc_amt;
-
-  newrg->rg_next = cur_vma->vm_freerg_list;
-  cur_vma->vm_freerg_list = newrg;
-  
+  //cur_vma->vm_end... 
+  // inc_limit_ret...
   /* The obtained vm area (only)
    * now will be alloc real ram region */
 
