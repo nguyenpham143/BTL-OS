@@ -295,17 +295,95 @@ int libfree(struct pcb_t *proc, uint32_t reg_index)
 int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 {
   uint32_t pte;
+	uint32_t vicpte;
+	addr_t freefpn;
+	addr_t vicpgn;
+	addr_t vicfpn;
+	addr_t swpfpn;
+	int swptyp;
+	struct memphy_struct *mram;
+	struct memphy_struct *mswp;
+	struct sc_regs regs;
 
 	if (mm == NULL || fpn == NULL || caller == NULL)
 		return -1;
 
-	pte = pte_get_entry(caller, pgn);
+	mram = caller->mram;
+	if (mram == NULL && caller->krnl != NULL)
+		mram = caller->krnl->mram;
 
-	if (!PAGING_PAGE_PRESENT(pte))
+	mswp = caller->active_mswp;
+	if (mswp == NULL && caller->krnl != NULL)
+		mswp = caller->krnl->active_mswp;
+
+	if (mram == NULL || mswp == NULL)
 		return -1;
 
-	*fpn = PAGING_PTE_FPN(pte);
+	pte = pte_get_entry(caller, pgn);
 
+	if (PAGING_PAGE_PRESENT(pte)) {
+		*fpn = PAGING_PTE_FPN(pte);
+		return 0;
+	}
+
+	if (!(pte & PAGING_PTE_SWAPPED_MASK))
+		return -1;
+
+	swptyp = GETVAL(pte, PAGING_PTE_SWPTYP_MASK,
+			PAGING_PTE_SWPTYP_LOBIT);
+	swpfpn = PAGING_PTE_SWP(pte);
+
+	(void)swptyp;
+
+	/*
+	 * Case 1: RAM still has a free frame.
+	 * Swap the target page from SWAP into this free RAM frame.
+	 */
+	if (MEMPHY_get_freefp(mram, &freefpn) == 0) {
+		regs.a1 = SYSMEM_SWP_OP;
+		regs.a2 = freefpn;
+		regs.a3 = swpfpn;
+
+		if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0) {
+			MEMPHY_put_freefp(mram, freefpn);
+			return -1;
+		}
+
+		MEMPHY_put_freefp(mswp, swpfpn);
+
+		pte_set_fpn(caller, pgn, freefpn);
+		enlist_pgn_node(&mm->fifo_pgn, pgn);
+
+		*fpn = freefpn;
+		return 0;
+	}
+
+	/*
+	 * Case 2: RAM is full. Select another victim page.
+	 * Swap victim RAM frame with the target SWAP frame.
+	 */
+	if (find_victim_page(mm, &vicpgn) != 0)
+		return -1;
+
+	vicpte = pte_get_entry(caller, vicpgn);
+	if (!PAGING_PAGE_PRESENT(vicpte))
+		return -1;
+
+	vicfpn = PAGING_PTE_FPN(vicpte);
+
+	regs.a1 = SYSMEM_SWP_OP;
+	regs.a2 = vicfpn;
+	regs.a3 = swpfpn;
+
+	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0)
+		return -1;
+
+	pte_set_swap(caller, vicpgn, caller->active_mswp_id, swpfpn);
+	pte_set_fpn(caller, pgn, vicfpn);
+
+	enlist_pgn_node(&mm->fifo_pgn, pgn);
+
+	*fpn = vicfpn;
 	return 0;
 }
 
@@ -777,25 +855,31 @@ int free_pcb_memph(struct pcb_t *caller)
  */
 int find_victim_page(struct mm_struct *mm, addr_t *retpgn)
 {
-  struct pgn_t *pg = mm->fifo_pgn;
+  struct pgn_t *pg;
+	struct pgn_t *prev = NULL;
 
-  /* TODO: Implement the theorical mechanism to find the victim page */
-  if (!pg)
-  {
-    return -1;
-  }
-  struct pgn_t *prev = NULL;
-  while (pg->pg_next)
-  {
-    prev = pg;
-    pg = pg->pg_next;
-  }
-  *retpgn = pg->pgn;
-  prev->pg_next = NULL;
+	if (mm == NULL || retpgn == NULL)
+		return -1;
 
-  free(pg);
+	pg = mm->fifo_pgn;
+	if (pg == NULL)
+		return -1;
 
-  return 0;
+	while (pg->pg_next != NULL) {
+		prev = pg;
+		pg = pg->pg_next;
+	}
+
+	*retpgn = pg->pgn;
+
+	if (prev == NULL)
+		mm->fifo_pgn = NULL;
+	else
+		prev->pg_next = NULL;
+
+	free(pg);
+
+	return 0;
 }
 
 /*

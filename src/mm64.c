@@ -312,52 +312,82 @@ addr_t vmap_page_range(struct pcb_t *caller,           // process call
 addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_struct **frm_lst)
 {
   addr_t fpn;
+	addr_t vicpgn;
+	addr_t vicfpn;
+	addr_t swpfpn;
+	uint32_t vicpte;
 	int pgit;
 	struct memphy_struct *mram;
+	struct memphy_struct *mswp;
+	struct mm_struct *mm;
 	struct framephy_struct *head = NULL;
 	struct framephy_struct *tail = NULL;
 	struct framephy_struct *newfp = NULL;
+	struct sc_regs regs;
 
 	if (caller == NULL || frm_lst == NULL || req_pgnum <= 0)
 		return -1;
 
 	*frm_lst = NULL;
 
+	mm = caller->mm;
+	if (mm == NULL && caller->krnl != NULL)
+		mm = caller->krnl->mm;
+
 	mram = caller->mram;
 	if (mram == NULL && caller->krnl != NULL)
 		mram = caller->krnl->mram;
 
-	if (mram == NULL)
+	mswp = caller->active_mswp;
+	if (mswp == NULL && caller->krnl != NULL)
+		mswp = caller->krnl->active_mswp;
+
+	if (mm == NULL || mram == NULL || mswp == NULL)
 		return -1;
 
 	for (pgit = 0; pgit < req_pgnum; pgit++) {
 		if (MEMPHY_get_freefp(mram, &fpn) != 0) {
-			while (head != NULL) {
-				newfp = head;
-				head = head->fp_next;
-				MEMPHY_put_freefp(mram, newfp->fpn);
-				free(newfp);
+			/*
+			 * RAM is full. Select a victim page and move it to SWAP.
+			 */
+			if (find_victim_page(mm, &vicpgn) != 0)
+				goto failed;
+
+			vicpte = pte_get_entry(caller, vicpgn);
+			if (!PAGING_PAGE_PRESENT(vicpte))
+				goto failed;
+
+			vicfpn = PAGING_PTE_FPN(vicpte);
+
+			if (MEMPHY_get_freefp(mswp, &swpfpn) != 0)
+				goto failed;
+
+			regs.a1 = SYSMEM_SWP_OP;
+			regs.a2 = vicfpn;
+			regs.a3 = swpfpn;
+
+			if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0) {
+				MEMPHY_put_freefp(mswp, swpfpn);
+				goto failed;
 			}
 
-			return -3000;
+			pte_set_swap(caller, vicpgn, caller->active_mswp_id, swpfpn);
+
+			/*
+			 * The victim RAM frame now becomes available for
+			 * the new virtual page.
+			 */
+			fpn = vicfpn;
 		}
 
 		newfp = malloc(sizeof(struct framephy_struct));
 		if (newfp == NULL) {
 			MEMPHY_put_freefp(mram, fpn);
-
-			while (head != NULL) {
-				newfp = head;
-				head = head->fp_next;
-				MEMPHY_put_freefp(mram, newfp->fpn);
-				free(newfp);
-			}
-
-			return -1;
+			goto failed;
 		}
 
 		newfp->fpn = fpn;
-		newfp->owner = caller->mm;
+		newfp->owner = mm;
 		newfp->fp_next = NULL;
 
 		if (head == NULL)
@@ -369,8 +399,18 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
 	}
 
 	*frm_lst = head;
-
 	return 0;
+
+failed:
+	while (head != NULL) {
+		newfp = head;
+		head = head->fp_next;
+		MEMPHY_put_freefp(mram, newfp->fpn);
+		free(newfp);
+	}
+
+	*frm_lst = NULL;
+	return -3000;
 }
 
 /*

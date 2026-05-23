@@ -49,10 +49,50 @@ struct vm_area_struct *get_vma_by_num(struct mm_struct *mm, int vmaid)
   return pvma;
 }
 
-int __mm_swap_page(struct pcb_t *caller, addr_t vicfpn , addr_t swpfpn)
+/*
+ * __mm_swap_page - Swap one RAM frame with one SWAP frame
+ * @caller : process calling memory operation
+ * @vicfpn : RAM frame number
+ * @swpfpn : SWAP frame number
+ *
+ * Exchange page content between MEMRAM[vicfpn] and MEMSWP[swpfpn].
+ */
+int __mm_swap_page(struct pcb_t *caller, addr_t vicfpn, addr_t swpfpn)
 {
-    __swap_cp_page(caller->krnl->mram, vicfpn, caller->krnl->active_mswp, swpfpn);
-    return 0;
+	struct memphy_struct *mram;
+	struct memphy_struct *mswp;
+	addr_t ramaddr;
+	addr_t swpaddr;
+	BYTE ramdata;
+	BYTE swpdata;
+	int i;
+
+	if (caller == NULL)
+		return -1;
+
+	mram = caller->mram;
+	if (mram == NULL && caller->krnl != NULL)
+		mram = caller->krnl->mram;
+
+	mswp = caller->active_mswp;
+	if (mswp == NULL && caller->krnl != NULL)
+		mswp = caller->krnl->active_mswp;
+
+	if (mram == NULL || mswp == NULL)
+		return -1;
+
+	for (i = 0; i < PAGING64_PAGESZ; i++) {
+		ramaddr = vicfpn * PAGING64_PAGESZ + i;
+		swpaddr = swpfpn * PAGING64_PAGESZ + i;
+
+		MEMPHY_read(mram, ramaddr, &ramdata);
+		MEMPHY_read(mswp, swpaddr, &swpdata);
+
+		MEMPHY_write(mram, ramaddr, swpdata);
+		MEMPHY_write(mswp, swpaddr, ramdata);
+	}
+
+	return 0;
 }
 
 /*get_vm_area_node - get vm area for a number of pages
