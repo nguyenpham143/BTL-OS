@@ -106,6 +106,7 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *allo
 	struct vm_rg_struct rgnode;
 	struct vm_area_struct *cur_vma;
 	struct sc_regs regs;
+  memset(&regs, 0, sizeof(regs));
 	addr_t old_sbrk;
 
 	if (caller == NULL || alloc_addr == NULL || size == 0)
@@ -304,6 +305,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 	struct memphy_struct *mram;
 	struct memphy_struct *mswp;
 	struct sc_regs regs;
+  memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || fpn == NULL || caller == NULL)
 		return -1;
@@ -400,6 +402,7 @@ int pg_getval(struct mm_struct *mm, addr_t addr, BYTE *data, struct pcb_t *calle
 	addr_t phyaddr;
 	int fpn;
 	struct sc_regs regs;
+  memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || data == NULL || caller == NULL)
 		return -1;
@@ -446,6 +449,7 @@ int pg_setval(struct mm_struct *mm, addr_t addr, BYTE value, struct pcb_t *calle
 	addr_t phyaddr;
 	int fpn;
 	struct sc_regs regs;
+  memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || caller == NULL)
 		return -1;

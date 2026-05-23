@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
+#include <string.h>
 
 #if defined(MM64)
 
@@ -324,6 +325,7 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
 	struct framephy_struct *tail = NULL;
 	struct framephy_struct *newfp = NULL;
 	struct sc_regs regs;
+  memset(&regs, 0, sizeof(regs));
 
 	if (caller == NULL || frm_lst == NULL || req_pgnum <= 0)
 		return -1;
