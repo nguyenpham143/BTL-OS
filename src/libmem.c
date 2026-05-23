@@ -818,11 +818,14 @@ int libkmem_cache_pool_create(struct pcb_t *caller, uint32_t size, uint32_t alig
  *@cache_pool_id: cache pool ID
  *@reg_index: memory region index
  */
-int libkmem_cache_alloc(struct pcb_t *proc, uint32_t cache_pool_id, uint32_t reg_index)
+int libkmem_cache_alloc(struct pcb_t *proc, uint32_t reg_index, uint32_t cache_pool_id)
 {
-  addr_t addr;
+  	addr_t addr;
 
 	if (proc == NULL)
+		return -1;
+
+	if (reg_index >= PAGING_MAX_SYMTBL_SZ)
 		return -1;
 
 	if (__kmem_cache_alloc(proc, -1, reg_index, cache_pool_id, &addr) != 0)

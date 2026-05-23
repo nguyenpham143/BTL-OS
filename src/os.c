@@ -124,10 +124,10 @@ static void * ld_routine(void * args) {
 
 	for (i = 0; i < PAGING64_MAX_PGN; i++)
 	{
-	   os.krnl_pgd[i] = (addr_t)&os.krnl_p4d;
-	   os.krnl_p4d[i] = (addr_t)&os.krnl_pud;
-	   os.krnl_pud[i] = (addr_t)&os.krnl_pmd;
-	   os.krnl_pmd[i] = (addr_t)&os.krnl_pt;
+	   os.krnl_pgd[i] = (addr_t)os.krnl_p4d;
+	   os.krnl_p4d[i] = (addr_t)os.krnl_pud;
+	   os.krnl_pud[i] = (addr_t)os.krnl_pmd;
+	   os.krnl_pmd[i] = (addr_t)os.krnl_pt;
 	   os.krnl_pt[i] = 0;
 	}
 #else
@@ -151,8 +151,8 @@ static void * ld_routine(void * args) {
 	i=0;
 	printf("ld_routine\n");
 	while (i < num_processes) {
-		struct pcb_t * proc = load(ld_processes.path[i]);
-		struct krnl_t * krnl = proc->krnl = &os;	
+		struct pcb_t *proc = load(ld_processes.path[i]);
+		proc->krnl = &os;
 
 #ifdef MLQ_SCHED
 		proc->prio = ld_processes.prio[i];
@@ -285,7 +285,7 @@ int main(int argc, char * argv[]) {
 	mm_ld_args->mram = (struct memphy_struct *) &mram;
 	mm_ld_args->mswp = (struct memphy_struct**) &mswp;
 	mm_ld_args->active_mswp = (struct memphy_struct *) &mswp[0];
-        mm_ld_args->active_mswp_id = 0;
+    mm_ld_args->active_mswp_id = 0;
 
 
 #endif
