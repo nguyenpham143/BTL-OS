@@ -102,6 +102,7 @@ void put_mlq_proc(struct pcb_t * proc) {
 	 * 
 	 */
 	pthread_mutex_lock(&queue_lock);
+	purgequeue(&running_list, proc);
 	enqueue(&mlq_ready_queue[proc->prio], proc);
 	pthread_mutex_unlock(&queue_lock);
 }

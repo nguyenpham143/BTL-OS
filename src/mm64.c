@@ -126,9 +126,10 @@ static addr_t *get_pte_ptr(struct pcb_t *caller, addr_t pgn)
 	get_pd_from_pagenum(pgn, &pgd, &p4d, &pud, &pmd, &pt);
 
 	/*
-	 * TODO: Walk through PGD/P4D/PUD/PMD/PT for full 5-level paging.
-	 * Current version uses mm->pt[pgn] to keep the code simple.
-	 */
+ 	* Simplified design:
+ 	* We extract 5-level paging indexes for tracing/report,
+ 	* but keep real PTE values in a linear PT array.
+ 	*/
 	(void)pgd;
 	(void)p4d;
 	(void)pud;
