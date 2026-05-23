@@ -650,21 +650,46 @@ int print_list_pgn(struct pgn_t *ip)
 
 int print_pgtbl(struct pcb_t *caller, addr_t start, addr_t end)
 {
-//addr_t pgn_start;//, pgn_end;
-//addr_t pgit;
-//struct krnl_t *krnl = caller->krnl;
+	addr_t pgn_start;
+	addr_t pgn_end;
+	addr_t pgn;
+	uint32_t pte;
 
-  addr_t pgd=0;
-  addr_t p4d=0;
-  addr_t pud=0;
-  addr_t pmd=0;
-  addr_t pt=0;
+	if (caller == NULL || caller->mm == NULL)
+		return -1;
 
-  get_pd_from_address(start, &pgd, &p4d, &pud, &pmd, &pt);
+	if (end == (addr_t)-1 || end <= start) {
+		pgn_start = 0;
+		pgn_end = PAGING64_MAX_PGN;
+	} else {
+		pgn_start = start >> PAGING64_ADDR_PT_SHIFT;
+		pgn_end = PAGING64_PAGE_ALIGNSZ(end) >> PAGING64_ADDR_PT_SHIFT;
 
-  /* TODO traverse the page map and dump the page directory entries */
+		if (pgn_end > PAGING64_MAX_PGN)
+			pgn_end = PAGING64_MAX_PGN;
+	}
 
-  return 0;
+	printf("print_pgtbl:\n");
+
+	for (pgn = pgn_start; pgn < pgn_end; pgn++) {
+		pte = pte_get_entry(caller, pgn);
+
+		if (pte == 0)
+			continue;
+
+		if (PAGING_PAGE_PRESENT(pte)) {
+			printf(" pgn=" FORMAT_ADDR " pte=0x%08x present fpn=%u\n",
+			       pgn, pte, PAGING_PTE_FPN(pte));
+		} else if (pte & PAGING_PTE_SWAPPED_MASK) {
+			printf(" pgn=" FORMAT_ADDR " pte=0x%08x swapped swp=%u\n",
+			       pgn, pte, PAGING_PTE_SWP(pte));
+		} else {
+			printf(" pgn=" FORMAT_ADDR " pte=0x%08x dummy\n",
+			       pgn, pte);
+		}
+	}
+
+	return 0;
 }
 
 #endif  //def MM64
