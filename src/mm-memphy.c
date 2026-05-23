@@ -15,6 +15,9 @@
  */
 
 #include "mm.h"
+#ifdef MM64
+#include "mm64.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -197,8 +200,11 @@ int init_memphy(struct memphy_struct *mp, addr_t max_size, int randomflg)
    mp->storage = (BYTE *)malloc(max_size * sizeof(BYTE));
    mp->maxsz = max_size;
    memset(mp->storage, 0, max_size * sizeof(BYTE));
-
+#ifdef MM64
+   MEMPHY_format(mp, PAGING64_PAGESZ);
+#else
    MEMPHY_format(mp, PAGING_PAGESZ);
+#endif
 
    mp->rdmflg = (randomflg != 0) ? 1 : 0;
 
