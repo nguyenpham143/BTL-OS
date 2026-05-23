@@ -250,13 +250,38 @@ int vmap_pgd_memset(struct pcb_t *caller,           // process call
                     addr_t addr,                       // start address which is aligned to pagesz
                     int pgnum)                      // num of mapping page
 {
-  //int pgit = 0;
-  //uint64_t pattern = 0xdeadbeef;
+  int pgit;
+	addr_t cur_addr;
+	addr_t pgn;
+	uint32_t dummy_pte;
 
-  /* TODO memset the page table with given pattern
-   */
+	if (caller == NULL || caller->mm == NULL || pgnum <= 0)
+		return -1;
 
-  return 0;
+	dummy_pte = 0x0BADBEEF;
+	CLRBIT(dummy_pte, PAGING_PTE_PRESENT_MASK);
+	CLRBIT(dummy_pte, PAGING_PTE_SWAPPED_MASK);
+
+	for (pgit = 0; pgit < pgnum; pgit++) {
+#ifdef MM64
+		cur_addr = addr + pgit * PAGING64_PAGESZ;
+		pgn = cur_addr >> PAGING64_ADDR_PT_SHIFT;
+
+		if (pgn >= PAGING64_MAX_PGN)
+			return -1;
+#else
+		cur_addr = addr + pgit * PAGING_PAGESZ;
+		pgn = PAGING_PGN(cur_addr);
+
+		if (pgn >= PAGING_MAX_PGN)
+			return -1;
+#endif
+
+		if (pte_set_entry(caller, pgn, dummy_pte) != 0)
+			return -1;
+	}
+
+	return 0;
 }
 
 /*

@@ -252,12 +252,25 @@ int __free(struct pcb_t *caller, int vmaid, int rgid)
  */
 int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
 {
-  addr_t  addr;
-  int val = __alloc(proc, 0, reg_index, size, &addr);
-  if (val == -1)
-  {
-    return -1;
-  }
+  addr_t addr;
+	int val;
+
+	if (proc == NULL)
+		return -1;
+
+	if (reg_index >= PAGING_MAX_SYMTBL_SZ)
+		return -1;
+
+	val = __alloc(proc, 0, reg_index, size, &addr);
+	if (val == -1)
+		return -1;
+
+	/*
+	 * Keep the returned virtual address in process register.
+	 * The same index is also used in symrgtbl for simple lookup.
+	 */
+	proc->regs[reg_index] = addr;
+
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
@@ -549,6 +562,7 @@ int libread(
 		return -1;
 
 	proc->regs[dst] = data;
+
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
@@ -1086,28 +1100,48 @@ int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, B
  */
 int free_pcb_memph(struct pcb_t *caller)
 {
-  pthread_mutex_lock(&mmvm_lock);
-  int pagenum, fpn;
-  uint32_t pte;
+  struct mm_struct *mm;
+	int pagenum;
+	int maxpgn;
+	addr_t fpn;
+	uint32_t pte;
 
-  for (pagenum = 0; pagenum < PAGING_MAX_PGN; pagenum++)
-  {
-    pte = caller->krnl->mm->pgd[pagenum];
+	if (caller == NULL)
+		return -1;
 
-    if (PAGING_PAGE_PRESENT(pte))
-    {
-      fpn = PAGING_FPN(pte);
-      MEMPHY_put_freefp(caller->krnl->mram, fpn);
-    }
-    else
-    {
-      fpn = PAGING_SWP(pte);
-      MEMPHY_put_freefp(caller->krnl->active_mswp, fpn);
-    }
-  }
+	mm = caller->mm;
+	if (mm == NULL)
+		return -1;
 
-  pthread_mutex_unlock(&mmvm_lock);
-  return 0;
+#ifdef MM64
+	maxpgn = PAGING64_MAX_PGN;
+#else
+	maxpgn = PAGING_MAX_PGN;
+#endif
+
+	pthread_mutex_lock(&mmvm_lock);
+
+	for (pagenum = 0; pagenum < maxpgn; pagenum++) {
+		pte = pte_get_entry(caller, pagenum);
+
+		if (pte == 0)
+			continue;
+
+		if (PAGING_PAGE_PRESENT(pte)) {
+			fpn = PAGING_PTE_FPN(pte);
+
+			if (caller->mram != NULL)
+				MEMPHY_put_freefp(caller->mram, fpn);
+		} else if (pte & PAGING_PTE_SWAPPED_MASK) {
+			fpn = PAGING_PTE_SWP(pte);
+
+			if (caller->active_mswp != NULL)
+				MEMPHY_put_freefp(caller->active_mswp, fpn);
+		}
+	}
+
+	pthread_mutex_unlock(&mmvm_lock);
+	return 0;
 }
 
 
