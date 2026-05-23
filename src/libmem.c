@@ -25,6 +25,7 @@
 #include <pthread.h>
 
 static pthread_mutex_t mmvm_lock = PTHREAD_MUTEX_INITIALIZER;
+static addr_t kcache_next[PAGING_MAX_SYMTBL_SZ];
 
 /*enlist_vm_freerg_list - add new rg to freerg_list
  *@mm: memory management instance
@@ -636,7 +637,6 @@ int libwrite(
  *@rgid: memory region ID (used to identify variable in symbole table)
  *@size: memory size
  */
-
 int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
 {
   /* TODO: provide OS level management
@@ -661,15 +661,92 @@ int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
  */
 addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
-  /* TODO: provide OS kernel memory allocation
-   *       update krnl_pgd for OS kernel level management */
+  struct krnl_t *krnl;
+	struct mm_struct *kmm;
+	struct vm_area_struct *kvma;
+	addr_t start;
+	addr_t end;
+	addr_t old_end;
+	addr_t new_end;
+	addr_t mapaddr;
+	addr_t kpgn;
+	addr_t fpn;
+	addr_t pte;
 
-  //struct krnl_t *krnl = caller->krnl;
-  //krnl->symrgtbl...
-  //krnl->krnl_pgd ...
+	(void)vmaid;
 
-  return 0;
+	if (caller == NULL || alloc_addr == NULL || size == 0)
+		return -1;
 
+	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
+		return -1;
+
+	krnl = caller->krnl;
+	if (krnl == NULL || krnl->mm == NULL || krnl->mram == NULL)
+		return -1;
+
+	kmm = krnl->mm;
+	kvma = kmm->mmap;
+	if (kvma == NULL)
+		return -1;
+
+	pthread_mutex_lock(&mmvm_lock);
+
+#ifdef MM64
+	if (kvma->sbrk < KERNEL_BASE_ADDR) {
+		kvma->vm_start = KERNEL_BASE_ADDR;
+		kvma->vm_end = KERNEL_BASE_ADDR;
+		kvma->sbrk = KERNEL_BASE_ADDR;
+	}
+#endif
+
+	start = kvma->sbrk;
+	end = start + size;
+
+#ifdef MM64
+	new_end = KERNEL_BASE_ADDR +
+		  PAGING64_PAGE_ALIGNSZ(end - KERNEL_BASE_ADDR);
+#else
+	new_end = PAGING_PAGE_ALIGNSZ(end);
+#endif
+
+	old_end = kvma->vm_end;
+
+#ifdef MM64
+	for (mapaddr = old_end; mapaddr < new_end; mapaddr += PAGING64_PAGESZ) {
+		if (MEMPHY_get_freefp(krnl->mram, &fpn) != 0) {
+			pthread_mutex_unlock(&mmvm_lock);
+			return -1;
+		}
+
+		kpgn = (mapaddr - KERNEL_BASE_ADDR) >> PAGING64_ADDR_PT_SHIFT;
+		if (kpgn >= PAGING64_MAX_PGN) {
+			MEMPHY_put_freefp(krnl->mram, fpn);
+			pthread_mutex_unlock(&mmvm_lock);
+			return -1;
+		}
+
+		pte = 0;
+		SETBIT(pte, PAGING_PTE_PRESENT_MASK);
+		CLRBIT(pte, PAGING_PTE_SWAPPED_MASK);
+		SETVAL(pte, fpn, PAGING_PTE_FPN_MASK, PAGING_PTE_FPN_LOBIT);
+
+		krnl->krnl_pt[kpgn] = pte;
+	}
+#endif
+
+	kvma->vm_end = new_end;
+	kvma->sbrk = end;
+
+	kmm->symrgtbl[rgid].vmaid = 0;
+	kmm->symrgtbl[rgid].rg_start = start;
+	kmm->symrgtbl[rgid].rg_end = end;
+	kmm->symrgtbl[rgid].rg_next = NULL;
+
+	*alloc_addr = start;
+
+	pthread_mutex_unlock(&mmvm_lock);
+	return 0;
 }
 
 /*libkmem_cache_pool_create - create cache pool in kmem

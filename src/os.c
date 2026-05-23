@@ -114,7 +114,7 @@ static void * ld_routine(void * args) {
 	struct timer_id_t * timer_id = (struct timer_id_t*)args;
 #endif
 	int i = 0;
-  /* TODO init kernel page table directory */
+  	/* TODO init kernel page table directory */
 #ifdef MM64
 	os.krnl_pgd = malloc(PAGING64_MAX_PGN * sizeof(addr_t));
 	os.krnl_p4d = malloc(PAGING64_MAX_PGN * sizeof(addr_t));
@@ -133,6 +133,21 @@ static void * ld_routine(void * args) {
 #else
 	os.krnl_pgd = malloc(PAGING_MAX_PGN * sizeof(uint32_t));
 #endif
+
+#ifdef MM_PAGING
+	os.mm = malloc(sizeof(struct mm_struct));
+	init_mm(os.mm, NULL);
+#ifdef MM64
+	os.mm->mmap->vm_start = KERNEL_BASE_ADDR;
+	os.mm->mmap->vm_end = KERNEL_BASE_ADDR;
+	os.mm->mmap->sbrk = KERNEL_BASE_ADDR;
+#endif
+	os.mram = mram;
+	os.mswp = mswp;
+	os.active_mswp = active_mswp;
+	os.active_mswp_id = 0;
+#endif
+
 	i=0;
 	printf("ld_routine\n");
 	while (i < num_processes) {
@@ -153,16 +168,6 @@ static void * ld_routine(void * args) {
 		proc->mswp = mswp;
 		proc->active_mswp = active_mswp;
 		proc->active_mswp_id = 0;
-
-		/*
-		 * Keep kernel aliases for legacy code paths.
-		 * Later memory routines should prefer caller->mm and caller->mram.
-		 */
-		krnl->mm = proc->mm;
-		krnl->mram = mram;
-		krnl->mswp = mswp;
-		krnl->active_mswp = active_mswp;
-		krnl->active_mswp_id = 0;
 #endif
 		printf("\tLoaded a process at %s, PID: %d PRIO: %ld\n",
 			ld_processes.path[i], proc->pid, ld_processes.prio[i]);
