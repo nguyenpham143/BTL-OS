@@ -252,7 +252,7 @@ int __free(struct pcb_t *caller, int vmaid, int rgid)
  */
 int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
 {
-  addr_t addr;
+  	addr_t addr;
 	int val;
 
 	if (proc == NULL)
@@ -264,7 +264,8 @@ int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
 	val = __alloc(proc, 0, reg_index, size, &addr);
 	if (val == -1)
 		return -1;
-
+	
+	printf("%s:%d\n",__func__,__LINE__);
 	/*
 	 * Keep the returned virtual address in process register.
 	 * The same index is also used in symrgtbl for simple lookup.
@@ -640,6 +641,7 @@ int libwrite(
 	val = __write(proc, 0, destination, offset, data);
 	if (val == -1)
 		return -1;
+	printf("%s:%d\n",__func__,__LINE__);
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
