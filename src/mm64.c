@@ -14,7 +14,8 @@
  */
 
 #include "mm64.h"
-#include <stdlib.h>
+#include "syscall.h"
+#include "libmem.h"
 #include <stdio.h>
 #include <time.h>
 #include <stdlib.h>
