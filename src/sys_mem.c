@@ -58,7 +58,7 @@ static struct pcb_t *find_proc_by_pid(struct krnl_t *krnl, uint32_t pid)
 
 int __sys_memmap(struct krnl_t *krnl, uint32_t pid, struct sc_regs* regs)
 {
-   int memop;
+   	int memop;
 	BYTE value;
 	struct pcb_t *caller;
 

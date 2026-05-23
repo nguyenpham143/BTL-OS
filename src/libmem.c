@@ -107,7 +107,7 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *allo
 	struct vm_rg_struct rgnode;
 	struct vm_area_struct *cur_vma;
 	struct sc_regs regs;
-  memset(&regs, 0, sizeof(regs));
+  	memset(&regs, 0, sizeof(regs));
 	addr_t old_sbrk;
 
 	if (caller == NULL || alloc_addr == NULL || size == 0)
@@ -314,7 +314,7 @@ int libfree(struct pcb_t *proc, uint32_t reg_index)
  */
 int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 {
-  uint32_t pte;
+  	uint32_t pte;
 	uint32_t vicpte;
 	addr_t freefpn;
 	addr_t vicpgn;
@@ -324,7 +324,7 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 	struct memphy_struct *mram;
 	struct memphy_struct *mswp;
 	struct sc_regs regs;
-  memset(&regs, 0, sizeof(regs));
+  	memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || fpn == NULL || caller == NULL)
 		return -1;
@@ -416,12 +416,12 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
  */
 int pg_getval(struct mm_struct *mm, addr_t addr, BYTE *data, struct pcb_t *caller)
 {
-  addr_t pgn;
+  	addr_t pgn;
 	addr_t off;
 	addr_t phyaddr;
 	int fpn;
 	struct sc_regs regs;
-  memset(&regs, 0, sizeof(regs));
+  	memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || data == NULL || caller == NULL)
 		return -1;
@@ -463,12 +463,12 @@ int pg_getval(struct mm_struct *mm, addr_t addr, BYTE *data, struct pcb_t *calle
  */
 int pg_setval(struct mm_struct *mm, addr_t addr, BYTE value, struct pcb_t *caller)
 {
-  addr_t pgn;
+  	addr_t pgn;
 	addr_t off;
 	addr_t phyaddr;
 	int fpn;
 	struct sc_regs regs;
-  memset(&regs, 0, sizeof(regs));
+  	memset(&regs, 0, sizeof(regs));
 
 	if (mm == NULL || caller == NULL)
 		return -1;
@@ -510,7 +510,7 @@ int pg_setval(struct mm_struct *mm, addr_t addr, BYTE value, struct pcb_t *calle
  */
 int __read(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  struct mm_struct *mm;
+  	struct mm_struct *mm;
 	struct vm_rg_struct *currg;
 	addr_t rgsize;
 
@@ -545,9 +545,9 @@ int libread(
     addr_t offset,    // Source address = [source] + [offset]
     uint32_t* destination)
 {
-  BYTE data;
-  printf("%s:%d\n",__func__,__LINE__);
-  uint32_t dst;
+  	BYTE data;
+  	printf("%s:%d\n",__func__,__LINE__);
+  	uint32_t dst;
 	int val;
 
 	if (proc == NULL || destination == NULL)
@@ -583,7 +583,7 @@ int libread(
  */
 int __write(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  struct mm_struct *mm;
+  	struct mm_struct *mm;
 	struct vm_rg_struct *currg;
 	addr_t rgsize;
 	int ret;
@@ -632,7 +632,7 @@ int libwrite(
     uint32_t destination, // Index of destination register
     addr_t offset)
 {
-  int val;
+  	int val;
 
 	if (proc == NULL)
 		return -1;
@@ -658,7 +658,7 @@ int libwrite(
  */
 int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
 {
-  addr_t addr;
+  	addr_t addr;
 
 	if (caller == NULL)
 		return -1;
@@ -684,7 +684,7 @@ int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
  */
 addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
-  struct krnl_t *krnl;
+  	struct krnl_t *krnl;
 	struct mm_struct *kmm;
 	struct vm_area_struct *kvma;
 	addr_t start;
@@ -780,7 +780,7 @@ addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t 
  */
 int libkmem_cache_pool_create(struct pcb_t *caller, uint32_t size, uint32_t align, uint32_t cache_pool_id)
 {
-  struct krnl_t *krnl;
+  	struct krnl_t *krnl;
 	addr_t storage;
 
 	if (caller == NULL || size == 0 || align == 0)
@@ -846,7 +846,7 @@ int libkmem_cache_alloc(struct pcb_t *proc, uint32_t reg_index, uint32_t cache_p
 
 addr_t __kmem_cache_alloc(struct pcb_t *caller, int vmaid, int rgid, int cache_pool_id, addr_t *alloc_addr)
 {
-  struct krnl_t *krnl;
+  	struct krnl_t *krnl;
 	struct kcache_pool_struct *pool;
 	addr_t off;
 	addr_t addr;
@@ -890,7 +890,7 @@ addr_t __kmem_cache_alloc(struct pcb_t *caller, int vmaid, int rgid, int cache_p
 
 int libkmem_copy_from_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
 {
-  BYTE data;
+  	BYTE data;
 	addr_t addr;
 	uint32_t i;
 	struct vm_rg_struct *dst;
@@ -921,7 +921,7 @@ int libkmem_copy_from_user(struct pcb_t *caller, uint32_t source, uint32_t desti
 
 int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
 {
-  BYTE data;
+  	BYTE data;
 	addr_t addr;
 	uint32_t i;
 	struct vm_rg_struct *dst;
@@ -961,7 +961,7 @@ int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destina
  */
 int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  struct krnl_t *krnl;
+  	struct krnl_t *krnl;
 	struct vm_rg_struct *currg;
 	addr_t kva;
 	addr_t kpgn;
@@ -1020,7 +1020,7 @@ int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, 
  */
 int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  struct krnl_t *krnl;
+  	struct krnl_t *krnl;
 	struct vm_rg_struct *currg;
 	addr_t kva;
 	addr_t kpgn;
@@ -1079,7 +1079,7 @@ int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset,
  */
 int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  return __read(caller, vmaid, rgid, offset, data);
+  	return __read(caller, vmaid, rgid, offset, data);
 }
 
 
@@ -1092,7 +1092,7 @@ int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BY
  */
 int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  return __write(caller, vmaid, rgid, offset, value);
+  	return __write(caller, vmaid, rgid, offset, value);
 }
 
 
@@ -1103,7 +1103,7 @@ int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, B
  */
 int free_pcb_memph(struct pcb_t *caller)
 {
-  struct mm_struct *mm;
+  	struct mm_struct *mm;
 	int pagenum;
 	int maxpgn;
 	addr_t fpn;
@@ -1155,7 +1155,7 @@ int free_pcb_memph(struct pcb_t *caller)
  */
 int find_victim_page(struct mm_struct *mm, addr_t *retpgn)
 {
-  struct pgn_t *pg;
+  	struct pgn_t *pg;
 	struct pgn_t *prev = NULL;
 
 	if (mm == NULL || retpgn == NULL)
@@ -1194,7 +1194,7 @@ int find_victim_page(struct mm_struct *mm, addr_t *retpgn)
  */
 int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_struct *newrg)
 {
-  struct mm_struct *mm;
+  	struct mm_struct *mm;
 	struct vm_area_struct *cur_vma;
 	struct vm_rg_struct *cur;
 	struct vm_rg_struct *prev = NULL;

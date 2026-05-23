@@ -30,23 +30,28 @@
  */
 struct vm_area_struct *get_vma_by_num(struct mm_struct *mm, int vmaid)
 {
-  struct vm_area_struct *pvma = mm->mmap;
+  	struct vm_area_struct *pvma;
 
-  if (mm->mmap == NULL)
-    return NULL;
+	if (mm == NULL)
+		return NULL;
 
-  int vmait = pvma->vm_id;
+	pvma = mm->mmap;
 
-  while (vmait < vmaid)
-  {
-    if (pvma == NULL)
-      return NULL;
+  	if (mm->mmap == NULL)
+    	return NULL;
 
-    pvma = pvma->vm_next;
-    vmait = pvma->vm_id;
-  }
+  	int vmait = pvma->vm_id;
 
-  return pvma;
+  	while (vmait < vmaid)
+  	{
+    	if (pvma == NULL)
+      	return NULL;
+
+    	pvma = pvma->vm_next;
+    	vmait = pvma->vm_id;
+  	}
+
+  	return pvma;
 }
 
 /*
@@ -145,39 +150,31 @@ struct vm_rg_struct *get_vm_area_node_at_brk(struct pcb_t *caller, int vmaid, ad
  */
 int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, addr_t vmaend)
 {
-  //struct vm_area_struct *vma = caller->krnl->mm->mmap;
+  	struct mm_struct *mm;
+	struct vm_area_struct *vma;
+	struct vm_area_struct *cur_area;
 
-  /* TODO validate the planned memory area is not overlapped */
-  if (vmastart >= vmaend)
-  {
-    return -1;
-  }
+	if (caller == NULL || vmastart >= vmaend)
+		return -1;
 
-  struct vm_area_struct *vma = caller->krnl->mm->mmap;
-  if (vma == NULL)
-  {
-    return -1;
-  }
+	mm = caller->mm;
+	if (mm == NULL)
+		return -1;
 
-  /* TODO validate the planned memory area is not overlapped */
+	cur_area = get_vma_by_num(mm, vmaid);
+	if (cur_area == NULL)
+		return -1;
 
-  struct vm_area_struct *cur_area = get_vma_by_num(caller->krnl->mm, vmaid);
-  if (cur_area == NULL)
-  {
-    return -1;
-  }
+	vma = mm->mmap;
 
-  while (vma != NULL)
-  {
-    if (vma != cur_area && OVERLAP(cur_area->vm_start, cur_area->vm_end, vma->vm_start, vma->vm_end))
-    {
-      return -1;
-    }
-    vma = vma->vm_next;
-  }
-  /* End TODO*/
+	while (vma != NULL) {
+		if (vma != cur_area && OVERLAP(vmastart, vmaend, vma->vm_start, vma->vm_end))
+			return -1;
 
-  return 0;
+		vma = vma->vm_next;
+	}
+
+	return 0;
 }
 
 /*inc_vma_limit - increase vm area limits to reserve space for new variable
