@@ -70,59 +70,73 @@ struct vm_rg_struct *get_symrg_byid(struct mm_struct *mm, int rgid)
  */
 int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
-  /*Allocate at the toproof */
-  pthread_mutex_lock(&mmvm_lock);
-  struct vm_rg_struct rgnode;
-  struct vm_area_struct *cur_vma = get_vma_by_num(caller->krnl->mm, vmaid);
-  int inc_sz=0;
+  struct mm_struct *mm;
+	struct vm_rg_struct rgnode;
+	struct vm_area_struct *cur_vma;
+	struct sc_regs regs;
+	addr_t old_sbrk;
 
-  if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0)
-  {
-    caller->krnl->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
-    caller->krnl->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
- 
-    *alloc_addr = rgnode.rg_start;
+	if (caller == NULL || alloc_addr == NULL || size == 0)
+		return -1;
 
-    pthread_mutex_unlock(&mmvm_lock);
-    return 0;
-  }
+	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
+		return -1;
 
-  /* TODO get_free_vmrg_area FAILED handle the region management (Fig.6)*/
+	pthread_mutex_lock(&mmvm_lock);
 
-  /*Attempt to increate limit to get space */
-#ifdef MM64
-  inc_sz = (uint32_t)(size/(int)PAGING64_PAGESZ);
-  inc_sz = inc_sz + 1;
-#else
-  inc_sz = PAGING_PAGE_ALIGNSZ(size);
-#endif
-  int old_sbrk;
-  inc_sz = inc_sz + 1;
+	mm = caller->mm;
+	if (mm == NULL && caller->krnl != NULL)
+		mm = caller->krnl->mm;
 
-  old_sbrk = cur_vma->sbrk;
+	if (mm == NULL) {
+		pthread_mutex_unlock(&mmvm_lock);
+		return -1;
+	}
 
-  /* TODO INCREASE THE LIMIT
-   * SYSCALL 1 sys_memmap
-   */
-  struct sc_regs regs;
-  regs.a1 = SYSMEM_INC_OP;
-  regs.a2 = vmaid;
-#ifdef MM64
-  regs.a3 = size;
-#else
-  regs.a3 = PAGING_PAGE_ALIGNSZ(size);
-#endif  
-  _syscall(caller->krnl, caller->pid, 17, &regs); /* SYSCALL 17 sys_memmap */
+	cur_vma = get_vma_by_num(mm, vmaid);
+	if (cur_vma == NULL) {
+		pthread_mutex_unlock(&mmvm_lock);
+		return -1;
+	}
 
-  /*Successful increase limit */
-  caller->krnl->mm->symrgtbl[rgid].rg_start = old_sbrk;
-  caller->krnl->mm->symrgtbl[rgid].rg_end = old_sbrk + size;
+	/*
+	 * Fast path: reuse a freed region if possible.
+	 */
+	if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0) {
+		mm->symrgtbl[rgid].vmaid = vmaid;
+		mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
+		mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
+		mm->symrgtbl[rgid].rg_next = NULL;
 
-  *alloc_addr = old_sbrk;
+		*alloc_addr = rgnode.rg_start;
 
-  pthread_mutex_unlock(&mmvm_lock);
-  return 0;
+		pthread_mutex_unlock(&mmvm_lock);
+		return 0;
+	}
 
+	/*
+	 * Slow path: grow VMA from current sbrk.
+	 */
+	old_sbrk = cur_vma->sbrk;
+
+	regs.a1 = SYSMEM_INC_OP;
+	regs.a2 = vmaid;
+	regs.a3 = size;
+
+	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0) {
+		pthread_mutex_unlock(&mmvm_lock);
+		return -1;
+	}
+
+	mm->symrgtbl[rgid].vmaid = vmaid;
+	mm->symrgtbl[rgid].rg_start = old_sbrk;
+	mm->symrgtbl[rgid].rg_end = old_sbrk + size;
+	mm->symrgtbl[rgid].rg_next = NULL;
+
+	*alloc_addr = old_sbrk;
+
+	pthread_mutex_unlock(&mmvm_lock);
+	return 0;
 }
 
 /*__free - remove a region memory
@@ -671,12 +685,27 @@ int find_victim_page(struct mm_struct *mm, addr_t *retpgn)
  */
 int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_struct *newrg)
 {
-  struct vm_area_struct *cur_vma = get_vma_by_num(caller->krnl->mm, vmaid);
+  struct mm_struct *mm;
+	struct vm_area_struct *cur_vma;
+	struct vm_rg_struct *rgit;
 
-  struct vm_rg_struct *rgit = cur_vma->vm_freerg_list;
+	if (caller == NULL || newrg == NULL || size <= 0)
+		return -1;
 
-  if (rgit == NULL)
-    return -1;
+	mm = caller->mm;
+	if (mm == NULL && caller->krnl != NULL)
+		mm = caller->krnl->mm;
+
+	if (mm == NULL)
+		return -1;
+
+	cur_vma = get_vma_by_num(mm, vmaid);
+	if (cur_vma == NULL)
+		return -1;
+
+	rgit = cur_vma->vm_freerg_list;
+	if (rgit == NULL)
+		return -1;
 
   /* Probe unintialized newrg */
   newrg->rg_start = newrg->rg_end = -1;
@@ -686,6 +715,7 @@ int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_s
   {
     if (rgit->rg_start + size <= rgit->rg_end)
     { /* Current region has enough space */
+      newrg->vmaid = vmaid;
       newrg->rg_start = rgit->rg_start;
       newrg->rg_end = rgit->rg_start + size;
 

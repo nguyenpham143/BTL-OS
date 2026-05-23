@@ -380,9 +380,9 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
  * @aend      : vm area end
  * @mapstart  : start mapping point
  * @incpgnum  : number of mapped page
- * @ret_rg    : returned region
+ * @ret_rg    : returned mapped region
  */
-addr_t vm_map_ram(struct pcb_t *caller, addr_t astart, addr_t aend, addr_t mapstart, int incpgnum, struct vm_rg_struct *ret_rg)
+addr_t vm_map_range(struct pcb_t *caller, addr_t astart, addr_t aend, addr_t mapstart, int incpgnum, struct vm_rg_struct *ret_rg)
 {
   struct framephy_struct *frm_lst = NULL;
 	addr_t ret_alloc = 0;

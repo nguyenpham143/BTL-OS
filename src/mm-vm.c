@@ -16,6 +16,9 @@
 
 #include "string.h"
 #include "mm.h"
+#ifdef MM64
+#include "mm64.h"
+#endif
 #include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
@@ -55,31 +58,42 @@ int __mm_swap_page(struct pcb_t *caller, addr_t vicfpn , addr_t swpfpn)
 /*get_vm_area_node - get vm area for a number of pages
  *@caller: caller
  *@vmaid: ID vm area to alloc memory region
- *@incpgnum: number of page
- *@vmastart: vma end
- *@vmaend: vma end
+ *@size: raw allocated size
+ *@alignedsz: page-aligned size
  *
  */
 struct vm_rg_struct *get_vm_area_node_at_brk(struct pcb_t *caller, int vmaid, addr_t size, addr_t alignedsz)
 {
-  struct vm_rg_struct * newrg;
-  /* TODO retrive current vma to obtain newrg, current comment out due to compiler redundant warning*/
-  //struct vm_area_struct *cur_vma = get_vma_by_num(caller->kernl->mm, vmaid);
+  struct mm_struct *mm;
+	struct vm_area_struct *cur_vma;
+	struct vm_rg_struct *newrg;
 
-  //newrg = malloc(sizeof(struct vm_rg_struct));
+	if (caller == NULL)
+		return NULL;
 
-  /* TODO: update the newrg boundary
-  // newrg->rg_start = ...
-  // newrg->rg_end = ...
-  */
-  struct vm_area_struct *cur_vma = get_vma_by_num(caller->krnl->mm, vmaid);
+	mm = caller->mm;
+	if (mm == NULL && caller->krnl != NULL)
+		mm = caller->krnl->mm;
 
-  newrg = malloc(sizeof(struct vm_rg_struct));
-  newrg->rg_start = cur_vma->sbrk;
-  newrg->rg_end = newrg->rg_start + size;
-  /* END TODO */
+	if (mm == NULL)
+		return NULL;
 
-  return newrg;
+	cur_vma = get_vma_by_num(mm, vmaid);
+	if (cur_vma == NULL)
+		return NULL;
+
+	newrg = malloc(sizeof(struct vm_rg_struct));
+	if (newrg == NULL)
+		return NULL;
+
+	newrg->vmaid = vmaid;
+	newrg->rg_start = cur_vma->sbrk;
+	newrg->rg_end = cur_vma->sbrk + size;
+	newrg->rg_next = NULL;
+
+	(void)alignedsz;
+
+	return newrg;
 }
 
 /*validate_overlap_vm_area
@@ -134,30 +148,67 @@ int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, a
  */
 int inc_vma_limit(struct pcb_t *caller, int vmaid, addr_t inc_sz)
 {
-  //struct vm_rg_struct * newrg = malloc(sizeof(struct vm_rg_struct));
+  struct mm_struct *mm;
+	struct vm_area_struct *cur_vma;
+	struct vm_rg_struct mapped_rg;
+	addr_t old_sbrk;
+	addr_t new_sbrk;
+	addr_t old_end;
+	addr_t new_end;
+	addr_t inc_amt;
+	int incnumpage;
 
-  /* TOTO with new address scheme, the size need tobe aligned 
-   *      the raw inc_sz maybe not fit pagesize
-   */ 
-  //addr_t inc_amt;
+	if (caller == NULL || inc_sz == 0)
+		return -1;
 
-//  int incnumpage =  inc_amt / PAGING_PAGESZ;
+	mm = caller->mm;
+	if (mm == NULL && caller->krnl != NULL)
+		mm = caller->krnl->mm;
 
-  /* TODO Validate overlap of obtained region */
-  //if (validate_overlap_vm_area(caller, vmaid, area->rg_start, area->rg_end) < 0)
-  //  return -1; /*Overlap and failed allocation */
+	if (mm == NULL)
+		return -1;
 
-  /* TODO: Obtain the new vm area based on vmaid */
-  //cur_vma->vm_end... 
-  // inc_limit_ret...
-  /* The obtained vm area (only)
-   * now will be alloc real ram region */
+	cur_vma = get_vma_by_num(mm, vmaid);
+	if (cur_vma == NULL)
+		return -1;
 
-//  if (vm_map_ram(caller, area->rg_start, area->rg_end, 
-//                   old_end, incnumpage , newrg) < 0)
-//    return -1; /* Map the memory to MEMRAM */
+	old_sbrk = cur_vma->sbrk;
+	old_end = cur_vma->vm_end;
+	new_sbrk = old_sbrk + inc_sz;
 
-  return 0;
+	/*
+	 * If the current VMA still has enough reserved space,
+	 * only move sbrk. No new physical frame is needed.
+	 */
+	if (new_sbrk <= old_end) {
+		cur_vma->sbrk = new_sbrk;
+		return 0;
+	}
+
+#ifdef MM64
+	new_end = PAGING64_PAGE_ALIGNSZ(new_sbrk);
+	inc_amt = new_end - old_end;
+	incnumpage = inc_amt / PAGING64_PAGESZ;
+#else
+	new_end = PAGING_PAGE_ALIGNSZ(new_sbrk);
+	inc_amt = new_end - old_end;
+	incnumpage = inc_amt / PAGING_PAGESZ;
+#endif
+
+	if (incnumpage <= 0)
+		return -1;
+
+	if (validate_overlap_vm_area(caller, vmaid, old_end, new_end) < 0)
+		return -1;
+
+	if (vm_map_range(caller, cur_vma->vm_start, new_end,
+		               old_end, incnumpage, &mapped_rg) < 0)
+		return -1;
+
+	cur_vma->vm_end = new_end;
+	cur_vma->sbrk = new_sbrk;
+
+	return 0;
 }
 
 // #endif
