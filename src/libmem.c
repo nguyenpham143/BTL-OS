@@ -369,22 +369,37 @@ int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
  */
 int __read(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
+  pthread_mutex_lock(&mmvm_lock);
+
   struct vm_rg_struct *currg = get_symrg_byid(caller->mm, rgid);
   struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
   /* TODO Invalid memory identify */
   if (currg == NULL || cur_vma == NULL)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
   if (currg->rg_start >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
   if (currg->rg_start + offset >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
   if (pg_getval(caller->mm, currg->rg_start + offset, data, caller) != 0)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
+  pthread_mutex_unlock(&mmvm_lock);
   return 0;
 }
 
@@ -824,9 +839,14 @@ int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destina
 int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
   /* TODO: provide OS memory operator for kernel memory region */
+  pthread_mutex_lock(&mmvm_lock);
+
   struct vm_rg_struct *currg = get_symrg_byid(caller->krnl->mm, rgid);
   if (currg == NULL)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
   addr_t kva;
   addr_t off;
@@ -838,7 +858,10 @@ int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, 
   if (currg->rg_start < KERNEL_BASE_ADDR ||
       currg->rg_start >= currg->rg_end ||
       currg->rg_start + offset >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
     return -1;
+  }
 
   kva = currg->rg_start + offset;
   off = kva % PAGING64_PAGESZ;
@@ -856,6 +879,7 @@ int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, 
 
   MEMPHY_read(caller->krnl->mram, phyaddr, data);
 
+  pthread_mutex_unlock(&mmvm_lock);
   return 0;
 }
 
