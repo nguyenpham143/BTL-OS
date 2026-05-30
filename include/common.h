@@ -117,11 +117,10 @@ struct pcb_t
 #endif
 	struct krnl_t *krnl;
 #ifdef MM_PAGING
+	/* Per-process virtual memory mapping.
+	 * Physical RAM/SWAP are still managed by the kernel.
+	 */
 	struct mm_struct *mm;
-	struct memphy_struct *mram;
-	struct memphy_struct **mswp;
-	struct memphy_struct *active_mswp;
-	uint32_t active_mswp_id;
 #endif	
 	struct page_table_t *page_table; // Page table
 	uint32_t bp;			 // Break pointer

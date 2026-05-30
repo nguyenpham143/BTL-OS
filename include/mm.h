@@ -98,6 +98,9 @@
 #define INCLUDE(x1,x2,y1,y2) ((x1) <= (y1) && (x2) >= (y2))
 #define OVERLAP(x1,x2,y1,y2) ((x1) < (y2) && (y1) < (x2))
 
+/* Kernel Space Base Address */
+#define KERNEL_BASE_ADDR ((addr_t)0xFF11000000000000ULL)
+
 /* VM region prototypes */
 struct vm_rg_struct * init_vm_rg(addr_t rg_start, addr_t rg_end);
 int enlist_vm_rg_node(struct vm_rg_struct **rglist, struct vm_rg_struct* rgnode);
@@ -110,7 +113,6 @@ addr_t vm_map_kernel(struct pcb_t *caller, addr_t astart, addr_t aend, addr_t ma
 addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_struct **frm_lst);
 int __swap_cp_page(struct memphy_struct *mpsrc, addr_t srcfpn,
                 struct memphy_struct *mpdst, addr_t dstfpn);
-
 /* KMEM prototypes */
 addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr);
 addr_t __kmem_cache_alloc(struct pcb_t *caller, int vmaid, int rgid, int cache_pool_id, addr_t *alloc_addr);
@@ -154,7 +156,6 @@ int pgwrite(
 		BYTE data, // Data to be wrttien into memory
 		uint32_t destination, // Index of destination register
 		addr_t offset);
-
 /* Local VM prototypes */
 struct vm_rg_struct * get_symrg_byid(struct mm_struct* mm, int rgid);
 int validate_overlap_vm_area(struct pcb_t *caller, int vmaid, addr_t vmastart, addr_t vmaend);

@@ -33,7 +33,7 @@ struct mmpaging_ld_args {
 };
 #endif
 
-static struct ld_args{
+static struct ld_args {
 	char ** path;
 	unsigned long * start_time;
 #ifdef MLQ_SCHED
@@ -47,6 +47,7 @@ struct cpu_args {
 	int id;
 };
 
+struct pcb_t *purgequeue(struct queue_t *q, struct pcb_t *proc);
 
 static void * cpu_routine(void * args) {
 	struct timer_id_t * timer_id = ((struct cpu_args*)args)->timer_id;
@@ -57,21 +58,22 @@ static void * cpu_routine(void * args) {
 	while (1) {
 		/* Check the status of current process */
 		if (proc == NULL) {
-			/* No process is running, the we load new process from
+			/* No process is running, then we load new process from
 		 	* ready queue */
 			proc = get_proc();
 			if (proc == NULL) {
                            next_slot(timer_id);
                            continue; /* First load failed. skip dummy load */
                         }
-		}else if (proc->pc == proc->code->size) {
+		} else if (proc->pc == proc->code->size) {
 			/* The porcess has finish it job */
 			printf("\tCPU %d: Processed %2d has finished\n",
 				id ,proc->pid);
+			purgequeue(proc->krnl->running_list, proc);
 			free(proc);
 			proc = get_proc();
 			time_left = 0;
-		}else if (time_left == 0) {
+		} else if (time_left == 0) {
 			/* The process has done its job in current time slot */
 			printf("\tCPU %d: Put process %2d to run queue\n",
 				id, proc->pid);
@@ -84,12 +86,12 @@ static void * cpu_routine(void * args) {
 			/* No process to run, exit */
 			printf("\tCPU %d stopped\n", id);
 			break;
-		}else if (proc == NULL) {
+		} else if (proc == NULL) {
 			/* There may be new processes to run in
 			 * next time slots, just skip current slot */
 			next_slot(timer_id);
 			continue;
-		}else if (time_left == 0) {
+		} else if (time_left == 0) {
 			printf("\tCPU %d: Dispatched process %2d\n",
 				id, proc->pid);
 			time_left = time_slot;
@@ -109,7 +111,8 @@ static void * ld_routine(void * args) {
 	struct memphy_struct* mram = ((struct mmpaging_ld_args *)args)->mram;
 	struct memphy_struct** mswp = ((struct mmpaging_ld_args *)args)->mswp;
 	struct memphy_struct* active_mswp = ((struct mmpaging_ld_args *)args)->active_mswp;
-	struct timer_id_t * timer_id = ((struct mmpaging_ld_args *)args)->timer_id;
+	int active_mswp_id = ((struct mmpaging_ld_args *)args)->active_mswp_id;
+	struct timer_id_t* timer_id = ((struct mmpaging_ld_args *)args)->timer_id;
 #else
 	struct timer_id_t * timer_id = (struct timer_id_t*)args;
 #endif
@@ -133,26 +136,18 @@ static void * ld_routine(void * args) {
 #else
 	os.krnl_pgd = malloc(PAGING_MAX_PGN * sizeof(uint32_t));
 #endif
-
-#ifdef MM_PAGING
 	os.mm = malloc(sizeof(struct mm_struct));
 	init_mm(os.mm, NULL);
-#ifdef MM64
-	os.mm->mmap->vm_start = KERNEL_BASE_ADDR;
-	os.mm->mmap->vm_end = KERNEL_BASE_ADDR;
-	os.mm->mmap->sbrk = KERNEL_BASE_ADDR;
-#endif
 	os.mram = mram;
 	os.mswp = mswp;
 	os.active_mswp = active_mswp;
+	os.active_mswp_id = active_mswp_id;
 	os.active_mswp_id = 0;
-#endif
-
 	i=0;
 	printf("ld_routine\n");
 	while (i < num_processes) {
-		struct pcb_t *proc = load(ld_processes.path[i]);
-		proc->krnl = &os;
+		struct pcb_t * proc = load(ld_processes.path[i]);
+		struct krnl_t * krnl = proc->krnl = &os;	
 
 #ifdef MLQ_SCHED
 		proc->prio = ld_processes.prio[i];
@@ -164,10 +159,10 @@ static void * ld_routine(void * args) {
 		proc->mm = malloc(sizeof(struct mm_struct));
 		init_mm(proc->mm, proc);
 
-		proc->mram = mram;
-		proc->mswp = mswp;
-		proc->active_mswp = active_mswp;
-		proc->active_mswp_id = 0;
+		krnl->mram = mram;
+		krnl->mswp = mswp;
+		krnl->active_mswp = active_mswp;
+		krnl->active_mswp_id = active_mswp_id;
 #endif
 		printf("\tLoaded a process at %s, PID: %d PRIO: %ld\n",
 			ld_processes.path[i], proc->pid, ld_processes.prio[i]);
@@ -214,7 +209,7 @@ static void read_config(const char * path) {
 	for(sit = 0; sit < PAGING_MAX_MMSWP; sit++)
 		fscanf(file, FORMAT_ARG, &(memswpsz[sit])); 
 
-       fscanf(file, "\n"); /* Final character */
+    fscanf(file, "\n"); /* Final character */
 #endif
 #endif
 
@@ -276,7 +271,7 @@ int main(int argc, char * argv[]) {
         /* Create all MEM SWAP */ 
 	int sit;
 	for(sit = 0; sit < PAGING_MAX_MMSWP; sit++)
-	       init_memphy(&mswp[sit], memswpsz[sit], rdmflag);
+		init_memphy(&mswp[sit], memswpsz[sit], rdmflag);
 
 	/* In Paging mode, it needs passing the system mem to each PCB through loader*/
 	struct mmpaging_ld_args *mm_ld_args = malloc(sizeof(struct mmpaging_ld_args));
@@ -286,7 +281,6 @@ int main(int argc, char * argv[]) {
 	mm_ld_args->mswp = (struct memphy_struct**) &mswp;
 	mm_ld_args->active_mswp = (struct memphy_struct *) &mswp[0];
     mm_ld_args->active_mswp_id = 0;
-
 
 #endif
 

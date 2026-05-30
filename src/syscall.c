@@ -11,7 +11,7 @@
 #include "syscall.h"
 #include "common.h"
 
-#define __SYSCALL(nr, sym) extern int __##sym(struct krnl_t*, uint32_t,struct sc_regs*);
+#define __SYSCALL(nr, sym) extern int __##sym(struct krnl_t*, uint32_t, struct sc_regs*);
 #include "syscalltbl.lst"
 #undef  __SYSCALL
 

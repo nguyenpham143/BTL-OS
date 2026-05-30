@@ -30,13 +30,6 @@
 
 typedef char BYTE;
 typedef ADDR_TYPE addr_t;
-#ifdef MM64
-#define USER_SPACE_START   ((addr_t)0x0000000000000000ULL)
-#define USER_SPACE_END     ((addr_t)0x00FFFFFFFFFFFFFFULL)
-
-#define KERNEL_BASE_ADDR   ((addr_t)0xFF11000000000000ULL)
-#define KERNEL_SPACE_END   ((addr_t)0xFFFFFFFFFFFFFFFFULL)
-#endif
 //typedef unsigned int uint32_t;
 
 /* 

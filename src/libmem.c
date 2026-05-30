@@ -16,7 +16,9 @@
 
 #include "string.h"
 #include "mm.h"
+#ifdef MM64
 #include "mm64.h"
+#endif
 #include "syscall.h"
 #include "libmem.h"
 #include <stdlib.h>
@@ -25,72 +27,39 @@
 #include <pthread.h>
 
 static pthread_mutex_t mmvm_lock = PTHREAD_MUTEX_INITIALIZER;
-static addr_t kcache_next[PAGING_MAX_SYMTBL_SZ];
 
 /*enlist_vm_freerg_list - add new rg to freerg_list
- *@mm: memory management instance
+ *@mm: memory region
  *@rg_elmt: new region
  *
  */
 int enlist_vm_freerg_list(struct mm_struct *mm, struct vm_rg_struct *rg_elmt)
 {
-  struct vm_rg_struct *cur;
-	struct vm_rg_struct *prev = NULL;
+  struct vm_rg_struct *rg_node = mm->mmap->vm_freerg_list;
 
-	if (mm == NULL || mm->mmap == NULL || rg_elmt == NULL)
-		return -1;
+  if (rg_elmt->rg_start >= rg_elmt->rg_end)
+    return -1;
 
-	if (rg_elmt->rg_start >= rg_elmt->rg_end)
-		return -1;
+  if (rg_node != NULL)
+    rg_elmt->rg_next = rg_node;
 
-	cur = mm->mmap->vm_freerg_list;
+  /* Enlist the new region */
+  mm->mmap->vm_freerg_list = rg_elmt;
 
-	while (cur != NULL && cur->rg_start < rg_elmt->rg_start) {
-		prev = cur;
-		cur = cur->rg_next;
-	}
-
-	rg_elmt->rg_next = cur;
-
-	if (prev == NULL)
-		mm->mmap->vm_freerg_list = rg_elmt;
-	else
-		prev->rg_next = rg_elmt;
-
-	/* Merge with next region if they are adjacent. */
-	if (rg_elmt->rg_next != NULL &&
-	    rg_elmt->rg_end == rg_elmt->rg_next->rg_start) {
-		struct vm_rg_struct *next = rg_elmt->rg_next;
-
-		rg_elmt->rg_end = next->rg_end;
-		rg_elmt->rg_next = next->rg_next;
-		free(next);
-	}
-
-	/* Merge with previous region if they are adjacent. */
-	if (prev != NULL && prev->rg_end == rg_elmt->rg_start) {
-		prev->rg_end = rg_elmt->rg_end;
-		prev->rg_next = rg_elmt->rg_next;
-		free(rg_elmt);
-	}
-
-	return 0;
+  return 0;
 }
 
 /*get_symrg_byid - get mem region by region ID
- *@mm: memory management instance
+ *@mm: memory region
  *@rgid: region ID act as symbol index of variable
  *
  */
 struct vm_rg_struct *get_symrg_byid(struct mm_struct *mm, int rgid)
 {
-  if (mm == NULL)
-		return NULL;
+  if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
+    return NULL;
 
-	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
-		return NULL;
-
-	return &mm->symrgtbl[rgid];
+  return &mm->symrgtbl[rgid];
 }
 
 /*__alloc - allocate a region memory
@@ -103,74 +72,45 @@ struct vm_rg_struct *get_symrg_byid(struct mm_struct *mm, int rgid)
  */
 int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
-  struct mm_struct *mm;
-	struct vm_rg_struct rgnode;
-	struct vm_area_struct *cur_vma;
-	struct sc_regs regs;
-  	memset(&regs, 0, sizeof(regs));
-	addr_t old_sbrk;
+  /*Allocate at the toproof */
+  pthread_mutex_lock(&mmvm_lock);
 
-	if (caller == NULL || alloc_addr == NULL || size == 0)
-		return -1;
+  struct vm_rg_struct rgnode;
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
-	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
+  if (get_free_vmrg_area(caller, vmaid, size, &rgnode) != 0)
+  {
+    struct sc_regs regs;
+    regs.a1 = SYSMEM_INC_OP;
+    regs.a2 = vmaid;
+    regs.a3 = size;
 
-	pthread_mutex_lock(&mmvm_lock);
+    if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0)
+    {
+      pthread_mutex_unlock(&mmvm_lock);
+      return -1;
+    }
 
-	mm = caller->mm;
-	if (mm == NULL && caller->krnl != NULL)
-		mm = caller->krnl->mm;
+    if (get_free_vmrg_area(caller, vmaid, size, &rgnode) != 0)
+    {
+      pthread_mutex_unlock(&mmvm_lock);
+      return -1;
+    }
+  }
 
-	if (mm == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
+  /* Successful increase limit */
+  caller->mm->symrgtbl[rgid].vmaid = vmaid;
+  caller->mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
+  caller->mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
+  caller->mm->symrgtbl[rgid].rg_next = NULL;
+  
+  if (rgnode.rg_end > cur_vma->sbrk)
+    cur_vma->sbrk = rgnode.rg_end;
 
-	cur_vma = get_vma_by_num(mm, vmaid);
-	if (cur_vma == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
+  *alloc_addr = rgnode.rg_start;
 
-	/*
-	 * Fast path: reuse a freed region if possible.
-	 */
-	if (get_free_vmrg_area(caller, vmaid, size, &rgnode) == 0) {
-		mm->symrgtbl[rgid].vmaid = vmaid;
-		mm->symrgtbl[rgid].rg_start = rgnode.rg_start;
-		mm->symrgtbl[rgid].rg_end = rgnode.rg_end;
-		mm->symrgtbl[rgid].rg_next = NULL;
-
-		*alloc_addr = rgnode.rg_start;
-
-		pthread_mutex_unlock(&mmvm_lock);
-		return 0;
-	}
-
-	/*
-	 * Slow path: grow VMA from current sbrk.
-	 */
-	old_sbrk = cur_vma->sbrk;
-
-	regs.a1 = SYSMEM_INC_OP;
-	regs.a2 = vmaid;
-	regs.a3 = size;
-
-	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
-
-	mm->symrgtbl[rgid].vmaid = vmaid;
-	mm->symrgtbl[rgid].rg_start = old_sbrk;
-	mm->symrgtbl[rgid].rg_end = old_sbrk + size;
-	mm->symrgtbl[rgid].rg_next = NULL;
-
-	*alloc_addr = old_sbrk;
-
-	pthread_mutex_unlock(&mmvm_lock);
-	return 0;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*__free - remove a region memory
@@ -178,71 +118,41 @@ int __alloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *allo
  *@vmaid: ID vm area to alloc memory region
  *@rgid: memory region ID (used to identify variable in symbole table)
  *@size: allocated size
- * Try to free user region first. If not found, try kernel region.
- * Physical frames are not reclaimed here; the virtual region is put
- * into the corresponding free region list for later reuse.
+ *
  */
 int __free(struct pcb_t *caller, int vmaid, int rgid)
 {
-  struct mm_struct *mm;
-	struct vm_rg_struct *rgnode;
-	struct vm_rg_struct *freerg_node;
+  pthread_mutex_lock(&mmvm_lock);
 
-	if (caller == NULL)
-		return -1;
+  if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
+  /* TODO: Manage the collect freed region to freerg_list */
+  struct vm_rg_struct *rgnode = get_symrg_byid(caller->mm, rgid);
 
-	pthread_mutex_lock(&mmvm_lock);
+  if (rgnode->rg_start >= rgnode->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	mm = caller->mm;
-	if (mm == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
+  struct vm_rg_struct *freerg_node = malloc(sizeof(struct vm_rg_struct));
+  freerg_node->vmaid = vmaid;
+  freerg_node->rg_start = rgnode->rg_start;
+  freerg_node->rg_end = rgnode->rg_end;
+  freerg_node->rg_next = NULL;
 
-	rgnode = get_symrg_byid(mm, rgid);
+  rgnode->rg_start = rgnode->rg_end = 0;
+  rgnode->rg_next = NULL;
 
-	if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0)) {
-		if (caller->krnl == NULL || caller->krnl->mm == NULL) {
-			pthread_mutex_unlock(&mmvm_lock);
-			return -1;
-		}
+  /*enlist the obsoleted memory region */
+  enlist_vm_freerg_list(caller->mm, freerg_node);
 
-		mm = caller->krnl->mm;
-		rgnode = get_symrg_byid(mm, rgid);
-
-		if (rgnode == NULL || (rgnode->rg_start == 0 && rgnode->rg_end == 0)) {
-			pthread_mutex_unlock(&mmvm_lock);
-			return -1;
-		}
-	}
-
-	freerg_node = malloc(sizeof(struct vm_rg_struct));
-	if (freerg_node == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
-
-	freerg_node->vmaid = vmaid;
-	freerg_node->rg_start = rgnode->rg_start;
-	freerg_node->rg_end = rgnode->rg_end;
-	freerg_node->rg_next = NULL;
-
-	rgnode->vmaid = 0;
-	rgnode->rg_start = 0;
-	rgnode->rg_end = 0;
-	rgnode->rg_next = NULL;
-
-	if (enlist_vm_freerg_list(mm, freerg_node) != 0) {
-		free(freerg_node);
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
-
-	pthread_mutex_unlock(&mmvm_lock);
-	return 0;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*liballoc - PAGING-based allocate a region memory
@@ -252,25 +162,13 @@ int __free(struct pcb_t *caller, int vmaid, int rgid)
  */
 int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
 {
-  	addr_t addr;
-	int val;
-	printf("%s:%d\n",__func__,__LINE__);
-
-	if (proc == NULL)
-		return -1;
-
-	if (reg_index >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
-
-	val = __alloc(proc, 0, reg_index, size, &addr);
-	if (val == -1)
-		return -1;
-	
-	/*
-	 * Keep the returned virtual address in process register.
-	 * The same index is also used in symrgtbl for simple lookup.
-	 */
-	proc->regs[reg_index] = addr;
+  addr_t addr;
+  int val = __alloc(proc, 0, reg_index, size, &addr);
+  if (val == -1)
+  {
+    return -1;
+  }
+  printf("%s:%d\n",__func__,__LINE__);
 
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
@@ -280,7 +178,7 @@ int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
 #endif
 
   /* By default using vmaid = 0 */
-  return val;
+  return 0;
 }
 
 /*libfree - PAGING-based free a region memory
@@ -288,22 +186,36 @@ int liballoc(struct pcb_t *proc, addr_t size, uint32_t reg_index)
  *@size: allocated size
  *@reg_index: memory region ID (used to identify variable in symbole table)
  */
-
 int libfree(struct pcb_t *proc, uint32_t reg_index)
 {
   int val = __free(proc, 0, reg_index);
   if (val == -1)
   {
-    return -1;
+    if (reg_index >= PAGING_MAX_SYMTBL_SZ)
+      return -1;
+
+    struct vm_rg_struct *krg = get_symrg_byid(proc->krnl->mm, reg_index);
+
+    if (krg == NULL || krg->rg_start < KERNEL_BASE_ADDR ||
+        krg->rg_start >= krg->rg_end)
+      return -1;
+
+    krg->rg_start = 0;
+    krg->rg_end = 0;
+    krg->rg_next = NULL;
+
+    return 0;
   }
   printf("%s:%d\n",__func__,__LINE__);
+
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
   print_pgtbl(proc, 0, -1); // print max TBL
 #endif
 #endif
-  return val;
+
+  return 0;
 }
 
 /*pg_getpage - get the page in ram
@@ -315,98 +227,67 @@ int libfree(struct pcb_t *proc, uint32_t reg_index)
  */
 int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
 {
-  	uint32_t pte;
-	uint32_t vicpte;
-	addr_t freefpn;
-	addr_t vicpgn;
-	addr_t vicfpn;
-	addr_t swpfpn;
-	int swptyp;
-	struct memphy_struct *mram;
-	struct memphy_struct *mswp;
-	struct sc_regs regs;
-  	memset(&regs, 0, sizeof(regs));
+  uint32_t pte = pte_get_entry(caller, pgn);
 
-	if (mm == NULL || fpn == NULL || caller == NULL)
-		return -1;
+  if (!PAGING_PAGE_PRESENT(pte))
+  { /* Page is not online, make it actively living */
+    addr_t vicpgn;
+    addr_t vicfpn;
+    addr_t swpfpn;
+    uint32_t vicpte;
 
-	mram = caller->mram;
-	if (mram == NULL && caller->krnl != NULL)
-		mram = caller->krnl->mram;
+    /* TODO Initialize the target frame storing our variable */
+    if ((pte & PAGING_PTE_SWAPPED_MASK) == 0)
+      return -1;
+    
+    // Target page is in swap, tgtfpn is the swap frame number of target page
+    addr_t tgtfpn = PAGING_PTE_SWP(pte);
 
-	mswp = caller->active_mswp;
-	if (mswp == NULL && caller->krnl != NULL)
-		mswp = caller->krnl->active_mswp;
+    /* TODO: Play with your paging theory here */
+    /* Find victim page */
+    if (find_victim_page(caller->mm, &vicpgn) == -1)
+      return -1;
 
-	if (mram == NULL || mswp == NULL)
-		return -1;
+    vicpte = pte_get_entry(caller, vicpgn);
+    vicfpn = PAGING_PTE_FPN(vicpte);
 
-	pte = pte_get_entry(caller, pgn);
+    /* Get free frame in MEMSWP */
+    if (MEMPHY_get_freefp(caller->krnl->active_mswp, &swpfpn) == -1)
+      return -1;
 
-	if (PAGING_PAGE_PRESENT(pte)) {
-		*fpn = PAGING_PTE_FPN(pte);
-		return 0;
-	}
+    /* TODO: Implement swap frame from MEMRAM to MEMSWP and vice versa*/
+    struct sc_regs regs;
+    regs.a1 = SYSMEM_SWP_OP;
+    regs.a2 = vicfpn;
+    regs.a3 = swpfpn;
 
-	if (!(pte & PAGING_PTE_SWAPPED_MASK))
-		return -1;
+    /* TODO copy victim frame to swap 
+     * SWP(vicfpn <--> swpfpn)
+     * SYSCALL 1 sys_memmap
+     */
+    if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
+      return -1;
 
-	swptyp = GETVAL(pte, PAGING_PTE_SWPTYP_MASK,
-			PAGING_PTE_SWPTYP_LOBIT);
-	swpfpn = PAGING_PTE_SWP(pte);
+    /*
+     * Copy target page from swap back to the victim RAM frame.
+     * Now vicfpn becomes the physical frame of pgn.
+     */
+    __swap_cp_page(caller->krnl->active_mswp, tgtfpn, caller->krnl->mram, vicfpn);
+    
+    MEMPHY_put_freefp(caller->krnl->active_mswp, tgtfpn);
 
-	(void)swptyp;
+    /* Update page table */
+    pte_set_swap(caller, vicpgn, caller->krnl->active_mswp_id, swpfpn);
 
-	/*
-	 * Case 1: RAM still has a free frame.
-	 * Swap the target page from SWAP into this free RAM frame.
-	 */
-	if (MEMPHY_get_freefp(mram, &freefpn) == 0) {
-		regs.a1 = SYSMEM_SWP_OP;
-		regs.a2 = freefpn;
-		regs.a3 = swpfpn;
+    /* Update its online status of the target page */
+    pte_set_fpn(caller, pgn, vicfpn);
 
-		if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0) {
-			MEMPHY_put_freefp(mram, freefpn);
-			return -1;
-		}
+    enlist_pgn_node(&caller->mm->fifo_pgn, pgn);
+  }
 
-		MEMPHY_put_freefp(mswp, swpfpn);
+  *fpn = PAGING_FPN(pte_get_entry(caller, pgn));
 
-		pte_set_fpn(caller, pgn, freefpn);
-		enlist_pgn_node(&mm->fifo_pgn, pgn);
-
-		*fpn = freefpn;
-		return 0;
-	}
-
-	/*
-	 * Case 2: RAM is full. Select another victim page.
-	 * Swap victim RAM frame with the target SWAP frame.
-	 */
-	if (find_victim_page(mm, &vicpgn) != 0)
-		return -1;
-
-	vicpte = pte_get_entry(caller, vicpgn);
-	if (!PAGING_PAGE_PRESENT(vicpte))
-		return -1;
-
-	vicfpn = PAGING_PTE_FPN(vicpte);
-
-	regs.a1 = SYSMEM_SWP_OP;
-	regs.a2 = vicfpn;
-	regs.a3 = swpfpn;
-
-	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0)
-		return -1;
-
-	pte_set_swap(caller, vicpgn, caller->active_mswp_id, swpfpn);
-	pte_set_fpn(caller, pgn, vicfpn);
-
-	enlist_pgn_node(&mm->fifo_pgn, pgn);
-
-	*fpn = vicfpn;
-	return 0;
+  return 0;
 }
 
 /*pg_getval - read value at given offset
@@ -415,45 +296,33 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
  *@value: value
  *
  */
-int pg_getval(struct mm_struct *mm, addr_t addr, BYTE *data, struct pcb_t *caller)
+int pg_getval(struct mm_struct *mm, int addr, BYTE *data, struct pcb_t *caller)
 {
-  	addr_t pgn;
-	addr_t off;
-	addr_t phyaddr;
-	int fpn;
-	struct sc_regs regs;
-  	memset(&regs, 0, sizeof(regs));
+  int pgn = ((addr_t)addr) / PAGING64_PAGESZ;
+  int off = ((addr_t)addr) % PAGING64_PAGESZ;
+  int fpn;
 
-	if (mm == NULL || data == NULL || caller == NULL)
-		return -1;
+  if (pg_getpage(mm, pgn, &fpn, caller) != 0)
+    return -1; /* invalid page access */
 
-#ifdef MM64
-	pgn = addr >> PAGING64_ADDR_PT_SHIFT;
-	off = PAGING64_ADDR_OFFST(addr);
-#else
-	pgn = PAGING_PGN(addr);
-	off = PAGING_OFFST(addr);
-#endif
+  int phyaddr = fpn * PAGING64_PAGESZ + off;
 
-	if (pg_getpage(mm, pgn, &fpn, caller) != 0)
-		return -1;
+  /* TODO 
+   *  MEMPHY_read(caller->krnl->mram, phyaddr, data);
+   *  MEMPHY READ 
+   *  SYSCALL 17 sys_memmap with SYSMEM_IO_READ
+   */
+  struct sc_regs regs;
+  regs.a1 = SYSMEM_IO_READ;
+  regs.a2 = phyaddr;
+  regs.a3 = 0;
 
-#ifdef MM64
-	phyaddr = ((addr_t)fpn * PAGING64_PAGESZ) + off;
-#else
-	phyaddr = ((addr_t)fpn * PAGING_PAGESZ) + off;
-#endif
+  if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
+    return -1;
 
-	regs.a1 = SYSMEM_IO_READ;
-	regs.a2 = phyaddr;
-	regs.a3 = 0;
+  *data = (BYTE)regs.a3;
 
-	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0)
-		return -1;
-
-	*data = (BYTE)regs.a3;
-
-	return 0;
+  return 0;
 }
 
 /*pg_setval - write value to given offset
@@ -462,43 +331,32 @@ int pg_getval(struct mm_struct *mm, addr_t addr, BYTE *data, struct pcb_t *calle
  *@value: value
  *
  */
-int pg_setval(struct mm_struct *mm, addr_t addr, BYTE value, struct pcb_t *caller)
+int pg_setval(struct mm_struct *mm, int addr, BYTE value, struct pcb_t *caller)
 {
-  	addr_t pgn;
-	addr_t off;
-	addr_t phyaddr;
-	int fpn;
-	struct sc_regs regs;
-  	memset(&regs, 0, sizeof(regs));
+  int pgn = ((addr_t)addr) / PAGING64_PAGESZ;
+  int off = ((addr_t)addr) % PAGING64_PAGESZ;
+  int fpn;
 
-	if (mm == NULL || caller == NULL)
-		return -1;
+  /* Get the page to MEMRAM, swap from MEMSWAP if needed */
+  if (pg_getpage(mm, pgn, &fpn, caller) != 0)
+    return -1; /* invalid page access */
 
-#ifdef MM64
-	pgn = addr >> PAGING64_ADDR_PT_SHIFT;
-	off = PAGING64_ADDR_OFFST(addr);
-#else
-	pgn = PAGING_PGN(addr);
-	off = PAGING_OFFST(addr);
-#endif
+  int phyaddr = fpn * PAGING64_PAGESZ + off;
 
-	if (pg_getpage(mm, pgn, &fpn, caller) != 0)
-		return -1;
+  /* TODO 
+   *  MEMPHY_write(caller->krnl->mram, phyaddr, value);
+   *  MEMPHY WRITE with SYSMEM_IO_WRITE 
+   * SYSCALL 17 sys_memmap
+   */
+  struct sc_regs regs;
+  regs.a1 = SYSMEM_IO_WRITE;
+  regs.a2 = phyaddr;
+  regs.a3 = value;
 
-#ifdef MM64
-	phyaddr = ((addr_t)fpn * PAGING64_PAGESZ) + off;
-#else
-	phyaddr = ((addr_t)fpn * PAGING_PAGESZ) + off;
-#endif
+  if (_syscall(caller->krnl, caller->pid, 17, &regs) < 0)
+    return -1;
 
-	regs.a1 = SYSMEM_IO_WRITE;
-	regs.a2 = phyaddr;
-	regs.a3 = value;
-
-	if (_syscall(caller->krnl, caller->pid, 17, &regs) != 0)
-		return -1;
-
-	return 0;
+  return 0;
 }
 
 /*__read - read value in region memory
@@ -511,32 +369,23 @@ int pg_setval(struct mm_struct *mm, addr_t addr, BYTE value, struct pcb_t *calle
  */
 int __read(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  	struct mm_struct *mm;
-	struct vm_rg_struct *currg;
-	addr_t rgsize;
+  struct vm_rg_struct *currg = get_symrg_byid(caller->mm, rgid);
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
-	if (caller == NULL || data == NULL)
-		return -1;
+  /* TODO Invalid memory identify */
+  if (currg == NULL || cur_vma == NULL)
+    return -1;
 
-	mm = caller->mm;
-	if (mm == NULL && caller->krnl != NULL)
-		mm = caller->krnl->mm;
+  if (currg->rg_start >= currg->rg_end)
+    return -1;
 
-	if (mm == NULL)
-		return -1;
+  if (currg->rg_start + offset >= currg->rg_end)
+    return -1;
 
-	currg = get_symrg_byid(mm, rgid);
-	if (currg == NULL)
-		return -1;
+  if (pg_getval(caller->mm, currg->rg_start + offset, data, caller) != 0)
+    return -1;
 
-	if (currg->rg_start == 0 && currg->rg_end == 0)
-		return -1;
-
-	rgsize = currg->rg_end - currg->rg_start;
-	if (offset >= rgsize)
-		return -1;
-
-	return pg_getval(mm, currg->rg_start + offset, data, caller);
+  return 0;
 }
 
 /*libread - PAGING-based read a region memory */
@@ -546,24 +395,15 @@ int libread(
     addr_t offset,    // Source address = [source] + [offset]
     uint32_t* destination)
 {
-  	BYTE data;
-  	printf("%s:%d\n",__func__,__LINE__);
-  	uint32_t dst;
-	int val;
+  BYTE data;
+  int val = __read(proc, 0, source, offset, &data);
+  if (val == -1)
+  {
+    return -1;
+  }
+  printf("%s:%d\n",__func__,__LINE__);
 
-	if (proc == NULL || destination == NULL)
-		return -1;
-
-	dst = *destination;
-	if (dst >= 10)
-		return -1;
-
-	val = __read(proc, 0, source, offset, &data);
-	if (val == -1)
-		return -1;
-
-	proc->regs[dst] = data;
-
+  *destination = data;
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
@@ -571,7 +411,7 @@ int libread(
 #endif
 #endif
 
-  return val;
+  return 0;
 }
 
 /*__write - write a region memory
@@ -584,46 +424,37 @@ int libread(
  */
 int __write(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  	struct mm_struct *mm;
-	struct vm_rg_struct *currg;
-	addr_t rgsize;
-	int ret;
+  pthread_mutex_lock(&mmvm_lock);
 
-	if (caller == NULL)
-		return -1;
+  struct vm_rg_struct *currg = get_symrg_byid(caller->mm, rgid);
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
-	pthread_mutex_lock(&mmvm_lock);
+  if (currg == NULL || cur_vma == NULL) /* Invalid memory identify */
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	mm = caller->mm;
-	if (mm == NULL && caller->krnl != NULL)
-		mm = caller->krnl->mm;
+  if (currg->rg_start >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (mm == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
+  if (currg->rg_start + offset >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	currg = get_symrg_byid(mm, rgid);
-	if (currg == NULL) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
+  if (pg_setval(caller->mm, currg->rg_start + offset, value, caller) != 0)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (currg->rg_start == 0 && currg->rg_end == 0) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
-
-	rgsize = currg->rg_end - currg->rg_start;
-	if (offset >= rgsize) {
-		pthread_mutex_unlock(&mmvm_lock);
-		return -1;
-	}
-
-	ret = pg_setval(mm, currg->rg_start + offset, value, caller);
-
-	pthread_mutex_unlock(&mmvm_lock);
-	return ret;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*libwrite - PAGING-based write a region memory */
@@ -633,16 +464,13 @@ int libwrite(
     uint32_t destination, // Index of destination register
     addr_t offset)
 {
-  	int val;
-	printf("%s:%d\n",__func__,__LINE__);
+  int val = __write(proc, 0, destination, offset, data);
+  if (val == -1)
+  {
+    return -1;
+  }
+  printf("%s:%d\n",__func__,__LINE__);
 
-	if (proc == NULL)
-		return -1;
-
-	val = __write(proc, 0, destination, offset, data);
-	if (val == -1)
-		return -1;
-	
 #ifdef IODUMP
   /* TODO dump IO content (if needed) */
 #ifdef PAGETBL_DUMP
@@ -650,9 +478,8 @@ int libwrite(
 #endif
 #endif
 
-  return val;
+  return 0;
 }
-
 
 /*libkmem_malloc- alloc region memory in kmem
  *@caller: caller
@@ -661,20 +488,16 @@ int libwrite(
  */
 int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
 {
-  	addr_t addr;
+  /* TODO: provide OS level management
+   *       and forward the request to helper
+   */
+  addr_t addr;
+  int val = __kmalloc(caller, -1, reg_index, size, &addr);
+  if (val == -1)
+    return -1;
+  printf("%s:%d",__func__,__LINE__);
 
-	if (caller == NULL)
-		return -1;
-
-	if (reg_index >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
-
-	if (__kmalloc(caller, -1, reg_index, size, &addr) != 0)
-		return -1;
-
-	caller->regs[reg_index] = addr;
-
-	return 0;
+  return 0;
 }
 
 
@@ -687,92 +510,95 @@ int libkmem_malloc(struct pcb_t * caller, uint32_t size, uint32_t reg_index)
  */
 addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t *alloc_addr)
 {
-  	struct krnl_t *krnl;
-	struct mm_struct *kmm;
-	struct vm_area_struct *kvma;
-	addr_t start;
-	addr_t end;
-	addr_t old_end;
-	addr_t new_end;
-	addr_t mapaddr;
-	addr_t kpgn;
-	addr_t fpn;
-	addr_t pte;
+  /* TODO: provide OS kernel memory allocation
+   *       update krnl_pgd for OS kernel level management */
+  struct krnl_t *krnl = caller->krnl;
+  struct framephy_struct *fp = krnl->mram->free_fp_list;
+  struct framephy_struct *prev = NULL;
+  struct framephy_struct *seq_prev = NULL;
+  struct framephy_struct *seq_head = NULL;
+  struct framephy_struct *seq_tail = NULL;
+  struct framephy_struct *after_tail = NULL;
+  struct framephy_struct *tmp;
 
-	(void)vmaid;
+  addr_t reqsz = PAGING64_PAGE_ALIGNSZ(size);
+  int reqpg = reqsz / PAGING64_PAGESZ;
+  int count = 0;
 
-	if (caller == NULL || alloc_addr == NULL || size == 0)
-		return -1;
+  addr_t first_fpn;
+  addr_t kva;
 
-	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
+  pthread_mutex_lock(&mmvm_lock);
 
-	krnl = caller->krnl;
-	if (krnl == NULL || krnl->mm == NULL || krnl->mram == NULL)
-		return -1;
+  // Tim reqpg frame lien tiep trong free_fp_list
+  if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ || size == 0)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	kmm = krnl->mm;
-	kvma = kmm->mmap;
-	if (kvma == NULL)
-		return -1;
+  while (fp != NULL)
+  {
+    if (count == 0)
+    {
+      seq_prev = prev;
+      seq_head = fp;
+      count = 1;
+    }
+    else if (fp->fpn == prev->fpn + 1)
+    {
+      count++;
+    }
+    else 
+    {
+      seq_prev = prev;
+      seq_head = fp;
+      count = 1;
+    }
 
-	pthread_mutex_lock(&mmvm_lock);
+    if (count == reqpg)
+    {
+      seq_tail = fp;
+      break;
+    }
 
-#ifdef MM64
-	if (kvma->sbrk < KERNEL_BASE_ADDR) {
-		kvma->vm_start = KERNEL_BASE_ADDR;
-		kvma->vm_end = KERNEL_BASE_ADDR;
-		kvma->sbrk = KERNEL_BASE_ADDR;
-	}
-#endif
+    prev = fp;
+    fp = fp->fp_next;
+  }
 
-	start = kvma->sbrk;
-	end = start + size;
+  if (seq_tail == NULL)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-#ifdef MM64
-	new_end = KERNEL_BASE_ADDR +
-		  PAGING64_PAGE_ALIGNSZ(end - KERNEL_BASE_ADDR);
-#else
-	new_end = PAGING_PAGE_ALIGNSZ(end);
-#endif
+  // Cat doan frame lien tiep ra khoi free list
+  after_tail = seq_tail->fp_next;
+  first_fpn = seq_head->fpn;
 
-	old_end = kvma->vm_end;
+  if (seq_prev == NULL)
+    krnl->mram->free_fp_list = after_tail;
+  else
+    seq_prev->fp_next = after_tail;
 
-#ifdef MM64
-	for (mapaddr = old_end; mapaddr < new_end; mapaddr += PAGING64_PAGESZ) {
-		if (MEMPHY_get_freefp(krnl->mram, &fpn) != 0) {
-			pthread_mutex_unlock(&mmvm_lock);
-			return -1;
-		}
+  fp = seq_head;
+  while (fp != after_tail)
+  {
+    tmp = fp;
+    fp = fp->fp_next;
+    free(tmp);
+  }
 
-		kpgn = (mapaddr - KERNEL_BASE_ADDR) >> PAGING64_ADDR_PT_SHIFT;
-		if (kpgn >= PAGING64_MAX_PGN) {
-			MEMPHY_put_freefp(krnl->mram, fpn);
-			pthread_mutex_unlock(&mmvm_lock);
-			return -1;
-		}
+  // kva theo direct-map
+  kva = KERNEL_BASE_ADDR + first_fpn * PAGING64_PAGESZ;
 
-		pte = 0;
-		SETBIT(pte, PAGING_PTE_PRESENT_MASK);
-		CLRBIT(pte, PAGING_PTE_SWAPPED_MASK);
-		SETVAL(pte, fpn, PAGING_PTE_FPN_MASK, PAGING_PTE_FPN_LOBIT);
+  // Map KVA -> FPN vao krnl_pgd
+  vm_map_kernel(caller, kva, kva + size, kva, reqpg, &krnl->mm->symrgtbl[rgid]);
 
-		krnl->krnl_pt[kpgn] = pte;
-	}
-#endif
+  *alloc_addr = kva;
 
-	kvma->vm_end = new_end;
-	kvma->sbrk = end;
-
-	kmm->symrgtbl[rgid].vmaid = 0;
-	kmm->symrgtbl[rgid].rg_start = start;
-	kmm->symrgtbl[rgid].rg_end = end;
-	kmm->symrgtbl[rgid].rg_next = NULL;
-
-	*alloc_addr = start;
-
-	pthread_mutex_unlock(&mmvm_lock);
-	return 0;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*libkmem_cache_pool_create - create cache pool in kmem
@@ -783,36 +609,100 @@ addr_t __kmalloc(struct pcb_t *caller, int vmaid, int rgid, addr_t size, addr_t 
  */
 int libkmem_cache_pool_create(struct pcb_t *caller, uint32_t size, uint32_t align, uint32_t cache_pool_id)
 {
-  	struct krnl_t *krnl;
-	addr_t storage;
+  /* TODO: provide OS level management */
+  struct krnl_t *krnl = caller->krnl;
+  struct framephy_struct *fp = krnl->mram->free_fp_list;
+  struct framephy_struct *prev = NULL;
+  struct framephy_struct *seq_prev = NULL;
+  struct framephy_struct *seq_head = NULL;
+  struct framephy_struct *seq_tail = NULL;
+  struct framephy_struct *after_tail = NULL;
+  struct framephy_struct *tmp;
 
-	if (caller == NULL || size == 0 || align == 0)
-		return -1;
+  struct vm_rg_struct newrg;
 
-	if (cache_pool_id >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
+  addr_t reqsz = PAGING64_PAGE_ALIGNSZ(size);
+  int reqpg = reqsz / PAGING64_PAGESZ;
+  int count = 0;
 
-	krnl = caller->krnl;
-	if (krnl == NULL || krnl->mm == NULL)
-		return -1;
+  addr_t first_fpn;
+  addr_t kva;
 
-	if (krnl->mm->kcpooltbl == NULL) {
-		krnl->mm->kcpooltbl = calloc(PAGING_MAX_SYMTBL_SZ, sizeof(struct kcache_pool_struct));
+  pthread_mutex_lock(&mmvm_lock);
 
-		if (krnl->mm->kcpooltbl == NULL)
-			return -1;
-	}
+  if (cache_pool_id >= PAGING_MAX_SYMTBL_SZ || size == 0 ||
+      align == 0 || size < align)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (__kmalloc(caller, -1, cache_pool_id, size, &storage) != 0)
-		return -1;
+  // Tim reqpg frame lien tiep trong free_fp_list
+  while (fp != NULL)
+  {
+    if (count == 0)
+    {
+      seq_prev = prev;
+      seq_head = fp;
+      count = 1;
+    }
+    else if (fp->fpn == prev->fpn + 1)
+    {
+      count++;
+    }
+    else
+    {
+      seq_prev = prev;
+      seq_head = fp;
+      count = 1;
+    }
 
-	krnl->mm->kcpooltbl[cache_pool_id].size = size;
-	krnl->mm->kcpooltbl[cache_pool_id].align = align;
-	krnl->mm->kcpooltbl[cache_pool_id].storage = storage;
+    if (count == reqpg)
+    {
+      seq_tail = fp;
+      break;
+    }
 
-	kcache_next[cache_pool_id] = 0;
+    prev = fp;
+    fp = fp->fp_next;
+  }
 
-	return 0;
+  if (seq_tail == NULL)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
+
+  // cCat doan frame lien tiep ra khoi free list
+  after_tail = seq_tail->fp_next;
+  first_fpn = seq_head->fpn;
+
+  if (seq_prev == NULL)
+    krnl->mram->free_fp_list = after_tail;
+  else
+    seq_prev->fp_next = after_tail;
+
+  fp = seq_head;
+
+  while (fp != after_tail)
+  {
+    tmp = fp;
+    fp = fp->fp_next;
+    free(tmp);
+  }
+
+  // KVA theo direct-map
+  kva = KERNEL_BASE_ADDR + first_fpn * PAGING64_PAGESZ;
+
+  // Map KVA -> FPN vao krnl_pgd
+  vm_map_kernel(caller, kva, kva + size, kva, reqpg, &newrg);
+
+  krnl->mm->kcpooltbl[cache_pool_id].size = size / align;
+  krnl->mm->kcpooltbl[cache_pool_id].align = align;
+  krnl->mm->kcpooltbl[cache_pool_id].storage = kva;
+
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*libkmem_cache_alloc - allocate cache slot in cache pool, cache slot has identical size
@@ -823,20 +713,16 @@ int libkmem_cache_pool_create(struct pcb_t *caller, uint32_t size, uint32_t alig
  */
 int libkmem_cache_alloc(struct pcb_t *proc, uint32_t reg_index, uint32_t cache_pool_id)
 {
-  	addr_t addr;
+  /* TODO: provide OS level management
+   *       and forward the request to helper
+   */
+  addr_t addr;
+  int val = __kmem_cache_alloc(proc, -1, reg_index, cache_pool_id, &addr);
+  if (val == -1)
+    return -1;
+  printf("%s:%d",__func__,__LINE__);
 
-	if (proc == NULL)
-		return -1;
-
-	if (reg_index >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
-
-	if (__kmem_cache_alloc(proc, -1, reg_index, cache_pool_id, &addr) != 0)
-		return -1;
-
-	proc->regs[reg_index] = addr;
-
-	return 0;
+  return 0;
 }
 
 /*kmem_cache_alloc - alloc region memory in kmem cache
@@ -846,112 +732,85 @@ int libkmem_cache_alloc(struct pcb_t *proc, uint32_t reg_index, uint32_t cache_p
  *@cache_pool_id: cached pool ID
  *@alloc_addr: allocated address
  */
-
 addr_t __kmem_cache_alloc(struct pcb_t *caller, int vmaid, int rgid, int cache_pool_id, addr_t *alloc_addr)
 {
-  	struct krnl_t *krnl;
-	struct kcache_pool_struct *pool;
-	addr_t off;
-	addr_t addr;
+  /* TODO: provide OS level management */
+  struct kcache_pool_struct *pool;
+  addr_t addr;
 
-	(void)vmaid;
+  pthread_mutex_lock(&mmvm_lock);
 
-	if (caller == NULL || alloc_addr == NULL)
-		return -1;
+  if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (rgid < 0 || rgid >= PAGING_MAX_SYMTBL_SZ ||
-	    cache_pool_id < 0 || cache_pool_id >= PAGING_MAX_SYMTBL_SZ)
-		return -1;
+  if (cache_pool_id < 0 || cache_pool_id >= PAGING_MAX_SYMTBL_SZ)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	krnl = caller->krnl;
-	if (krnl == NULL || krnl->mm == NULL || krnl->mm->kcpooltbl == NULL)
-		return -1;
+  pool = &caller->krnl->mm->kcpooltbl[cache_pool_id];
 
-	pool = &krnl->mm->kcpooltbl[cache_pool_id];
+  if (pool->size <= 0 || pool->storage == 0)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (pool->storage == 0 || pool->size <= 0 || pool->align <= 0)
-		return -1;
+  addr = pool->storage;
 
-	off = kcache_next[cache_pool_id];
+  pool->storage += pool->align;
+  pool->size--;
 
-	if (off + pool->align > (addr_t)pool->size)
-		return -1;
+  caller->krnl->mm->symrgtbl[rgid].vmaid = vmaid;
+  caller->krnl->mm->symrgtbl[rgid].rg_start = addr;
+  caller->krnl->mm->symrgtbl[rgid].rg_end = addr + pool->align;
+  caller->krnl->mm->symrgtbl[rgid].rg_next = NULL;
 
-	addr = pool->storage + off;
-	kcache_next[cache_pool_id] += pool->align;
+  *alloc_addr = addr;
 
-	krnl->mm->symrgtbl[rgid].vmaid = 0;
-	krnl->mm->symrgtbl[rgid].rg_start = addr;
-	krnl->mm->symrgtbl[rgid].rg_end = addr + pool->align;
-	krnl->mm->symrgtbl[rgid].rg_next = NULL;
-
-	*alloc_addr = addr;
-
-	return 0;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 
 int libkmem_copy_from_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
 {
-  	BYTE data;
-	addr_t addr;
-	uint32_t i;
-	struct vm_rg_struct *dst;
+  /* TODO: provide OS level management kmem
+   */
+  BYTE data;
+  
+  for (uint32_t i = 0; i < size; i++)
+  {
+    if (__read_user_mem(caller, 0, source, offset + i, &data) != 0)
+      return -1;
 
-	if (caller == NULL || size == 0)
-		return -1;
+    if (__write_kernel_mem(caller, -1, destination, offset + i, data) != 0)
+      return -1;
+  }
 
-	if (caller->krnl == NULL || caller->krnl->mm == NULL)
-		return -1;
-
-	dst = get_symrg_byid(caller->krnl->mm, destination);
-
-	if (dst == NULL || (dst->rg_start == 0 && dst->rg_end == 0)) {
-		if (__kmalloc(caller, -1, destination, offset + size, &addr) != 0)
-			return -1;
-	}
-
-	for (i = 0; i < size; i++) {
-		if (__read_user_mem(caller, 0, source, offset + i, &data) != 0)
-			return -1;
-
-		if (__write_kernel_mem(caller, 0, destination, offset + i, data) != 0)
-			return -1;
-	}
-
-	return 0;
+  return 0;
 }
 
 int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destination, uint32_t offset, uint32_t size)
 {
-  	BYTE data;
-	addr_t addr;
-	uint32_t i;
-	struct vm_rg_struct *dst;
+  /* TODO: provide OS level management kmem
+   */
+  BYTE data;
 
-	if (caller == NULL || size == 0)
-		return -1;
+  for (uint32_t i = 0; i < size; i++)
+  {
+    if (__read_kernel_mem(caller, -1, source, offset + i, &data) != 0)
+      return -1;
 
-	if (caller->mm == NULL)
-		return -1;
+    if (__write_user_mem(caller, 0, destination, offset + i, data) != 0)
+      return -1;
+  }
 
-	dst = get_symrg_byid(caller->mm, destination);
-
-	if (dst == NULL || (dst->rg_start == 0 && dst->rg_end == 0)) {
-		if (__alloc(caller, 0, destination,
-			    offset + size, &addr) != 0)
-			return -1;
-	}
-
-	for (i = 0; i < size; i++) {
-		if (__read_kernel_mem(caller, 0, source, offset + i, &data) != 0)
-			return -1;
-
-		if (__write_user_mem(caller, 0, destination, offset + i, data) != 0)
-			return -1;
-	}
-
-	return 0;
+  return 0;
 }
 
 
@@ -964,54 +823,40 @@ int libkmem_copy_to_user(struct pcb_t *caller, uint32_t source, uint32_t destina
  */
 int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  	struct krnl_t *krnl;
-	struct vm_rg_struct *currg;
-	addr_t kva;
-	addr_t kpgn;
-	addr_t off;
-	addr_t pte;
-	addr_t fpn;
-	addr_t phyaddr;
+  /* TODO: provide OS memory operator for kernel memory region */
+  struct vm_rg_struct *currg = get_symrg_byid(caller->krnl->mm, rgid);
+  if (currg == NULL)
+    return -1;
 
-	(void)vmaid;
+  addr_t kva;
+  addr_t off;
+  addr_t phyaddr;
 
-	if (caller == NULL || data == NULL)
-		return -1;
+  addr_t *pgd_tbl, *p4d_tbl, *pud_tbl, *pmd_tbl, *pt_tbl, *pte;
+  addr_t pgd, p4d, pud, pmd, pt = 0;
 
-	krnl = caller->krnl;
-	if (krnl == NULL || krnl->mm == NULL || krnl->mram == NULL)
-		return -1;
+  if (currg->rg_start < KERNEL_BASE_ADDR ||
+      currg->rg_start >= currg->rg_end ||
+      currg->rg_start + offset >= currg->rg_end)
+    return -1;
 
-	currg = get_symrg_byid(krnl->mm, rgid);
-	if (currg == NULL || (currg->rg_start == 0 && currg->rg_end == 0))
-		return -1;
+  kva = currg->rg_start + offset;
+  off = kva % PAGING64_PAGESZ;
 
-	if (offset >= currg->rg_end - currg->rg_start)
-		return -1;
+  get_pd_from_address(kva, &pgd, &p4d, &pud, &pmd, &pt);
 
-	kva = currg->rg_start + offset;
+  pgd_tbl = caller->krnl->krnl_pgd;
+  p4d_tbl = (addr_t*)pgd_tbl[pgd];
+  pud_tbl = (addr_t*)p4d_tbl[p4d];
+  pmd_tbl = (addr_t*)pud_tbl[pud];
+  pt_tbl  = (addr_t*)pmd_tbl[pmd];
+  pte = &pt_tbl[pt];
 
-#ifdef MM64
-	if (kva < KERNEL_BASE_ADDR)
-		return -1;
+  phyaddr = PAGING_PTE_FPN(*pte) * PAGING64_PAGESZ + off;
 
-	kpgn = (kva - KERNEL_BASE_ADDR) >> PAGING64_ADDR_PT_SHIFT;
-	off = PAGING64_ADDR_OFFST(kva);
+  MEMPHY_read(caller->krnl->mram, phyaddr, data);
 
-	if (kpgn >= PAGING64_MAX_PGN)
-		return -1;
-
-	pte = krnl->krnl_pt[kpgn];
-	if (!PAGING_PAGE_PRESENT(pte))
-		return -1;
-
-	fpn = PAGING_PTE_FPN(pte);
-	phyaddr = fpn * PAGING64_PAGESZ + off;
-#else
-	return -1;
-#endif
-
-	return MEMPHY_read(krnl->mram, phyaddr, data);
+  return 0;
 }
 
 /*__write_kernel_mem - write a kernel region memory
@@ -1023,54 +868,49 @@ int __read_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, 
  */
 int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  	struct krnl_t *krnl;
-	struct vm_rg_struct *currg;
-	addr_t kva;
-	addr_t kpgn;
-	addr_t off;
-	addr_t pte;
-	addr_t fpn;
-	addr_t phyaddr;
+  /* TODO: provide OS memory operator for kernel memory region */
+  pthread_mutex_lock(&mmvm_lock);
 
-	(void)vmaid;
+  struct vm_rg_struct *currg = get_symrg_byid(caller->krnl->mm, rgid);
+  if (currg == NULL)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (caller == NULL)
-		return -1;
+  addr_t kva;
+  addr_t off;
+  addr_t phyaddr;
 
-	krnl = caller->krnl;
-	if (krnl == NULL || krnl->mm == NULL || krnl->mram == NULL)
-		return -1;
+  addr_t *pgd_tbl, *p4d_tbl, *pud_tbl, *pmd_tbl, *pt_tbl, *pte;
+  addr_t pgd, p4d, pud, pmd, pt = 0;
 
-	currg = get_symrg_byid(krnl->mm, rgid);
-	if (currg == NULL || (currg->rg_start == 0 && currg->rg_end == 0))
-		return -1;
+  if (currg->rg_start < KERNEL_BASE_ADDR ||
+      currg->rg_start >= currg->rg_end ||
+      currg->rg_start + offset >= currg->rg_end)
+  {
+    pthread_mutex_unlock(&mmvm_lock);
+    return -1;
+  }
 
-	if (offset >= currg->rg_end - currg->rg_start)
-		return -1;
+  kva = currg->rg_start + offset;
+  off = kva % PAGING64_PAGESZ;
 
-	kva = currg->rg_start + offset;
+  get_pd_from_address(kva, &pgd, &p4d, &pud, &pmd, &pt);
 
-#ifdef MM64
-	if (kva < KERNEL_BASE_ADDR)
-		return -1;
+  pgd_tbl = caller->krnl->krnl_pgd;
+  p4d_tbl = (addr_t*)pgd_tbl[pgd];
+  pud_tbl = (addr_t*)p4d_tbl[p4d];
+  pmd_tbl = (addr_t*)pud_tbl[pud];
+  pt_tbl  = (addr_t*)pmd_tbl[pmd];
+  pte = &pt_tbl[pt];
 
-	kpgn = (kva - KERNEL_BASE_ADDR) >> PAGING64_ADDR_PT_SHIFT;
-	off = PAGING64_ADDR_OFFST(kva);
+  phyaddr = PAGING_PTE_FPN(*pte) * PAGING64_PAGESZ + off;
 
-	if (kpgn >= PAGING64_MAX_PGN)
-		return -1;
+  MEMPHY_write(caller->krnl->mram, phyaddr, value);
 
-	pte = krnl->krnl_pt[kpgn];
-	if (!PAGING_PAGE_PRESENT(pte))
-		return -1;
-
-	fpn = PAGING_PTE_FPN(pte);
-	phyaddr = fpn * PAGING64_PAGESZ + off;
-#else
-	return -1;
-#endif
-
-	return MEMPHY_write(krnl->mram, phyaddr, value);
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 /*__read_user_mem - read value in user region memory
@@ -1082,7 +922,7 @@ int __write_kernel_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset,
  */
 int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE *data)
 {
-  	return __read(caller, vmaid, rgid, offset, data);
+  return __read(caller, vmaid, rgid, offset, data);
 }
 
 
@@ -1095,7 +935,7 @@ int __read_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BY
  */
 int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, BYTE value)
 {
-  	return __write(caller, vmaid, rgid, offset, value);
+  return __write(caller, vmaid, rgid, offset, value);
 }
 
 
@@ -1106,48 +946,31 @@ int __write_user_mem(struct pcb_t *caller, int vmaid, int rgid, addr_t offset, B
  */
 int free_pcb_memph(struct pcb_t *caller)
 {
-  	struct mm_struct *mm;
-	int pagenum;
-	int maxpgn;
-	addr_t fpn;
-	uint32_t pte;
+  pthread_mutex_lock(&mmvm_lock);
+  int pagenum, fpn;
+  uint32_t pte;
 
-	if (caller == NULL)
-		return -1;
+  for (pagenum = 0; pagenum < PAGING64_MAX_PGN; pagenum++)
+  {
+    pte = pte_get_entry(caller, pagenum);
 
-	mm = caller->mm;
-	if (mm == NULL)
-		return -1;
+    if (pte == 0)
+      continue;
 
-#ifdef MM64
-	maxpgn = PAGING64_MAX_PGN;
-#else
-	maxpgn = PAGING_MAX_PGN;
-#endif
+    if (PAGING_PAGE_PRESENT(pte))
+    {
+      fpn = PAGING_FPN(pte);
+      MEMPHY_put_freefp(caller->krnl->mram, fpn);
+    }
+    else
+    {
+      fpn = PAGING_SWP(pte);
+      MEMPHY_put_freefp(caller->krnl->active_mswp, fpn);
+    }
+  }
 
-	pthread_mutex_lock(&mmvm_lock);
-
-	for (pagenum = 0; pagenum < maxpgn; pagenum++) {
-		pte = pte_get_entry(caller, pagenum);
-
-		if (pte == 0)
-			continue;
-
-		if (PAGING_PAGE_PRESENT(pte)) {
-			fpn = PAGING_PTE_FPN(pte);
-
-			if (caller->mram != NULL)
-				MEMPHY_put_freefp(caller->mram, fpn);
-		} else if (pte & PAGING_PTE_SWAPPED_MASK) {
-			fpn = PAGING_PTE_SWP(pte);
-
-			if (caller->active_mswp != NULL)
-				MEMPHY_put_freefp(caller->active_mswp, fpn);
-		}
-	}
-
-	pthread_mutex_unlock(&mmvm_lock);
-	return 0;
+  pthread_mutex_unlock(&mmvm_lock);
+  return 0;
 }
 
 
@@ -1158,100 +981,96 @@ int free_pcb_memph(struct pcb_t *caller)
  */
 int find_victim_page(struct mm_struct *mm, addr_t *retpgn)
 {
-  	struct pgn_t *pg;
-	struct pgn_t *prev = NULL;
+  struct pgn_t *pg = mm->fifo_pgn;
 
-	if (mm == NULL || retpgn == NULL)
-		return -1;
+  /* TODO: Implement the theorical mechanism to find the victim page */
+  if (!pg)
+  {
+    return -1;
+  }
 
-	pg = mm->fifo_pgn;
-	if (pg == NULL)
-		return -1;
+  struct pgn_t *prev = NULL;
+  while (pg->pg_next)
+  {
+    prev = pg;
+    pg = pg->pg_next;
+  }
+  *retpgn = pg->pgn;
+  
+  if (!prev)
+    mm->fifo_pgn = NULL;
+  else
+    prev->pg_next = NULL;
 
-	while (pg->pg_next != NULL) {
-		prev = pg;
-		pg = pg->pg_next;
-	}
+  free(pg);
 
-	*retpgn = pg->pgn;
-
-	if (prev == NULL)
-		mm->fifo_pgn = NULL;
-	else
-		prev->pg_next = NULL;
-
-	free(pg);
-
-	return 0;
+  return 0;
 }
 
-/*
- * get_free_vmrg_area - Get a free VM region from VMA free list
- * @caller : process calling memory operation
- * @vmaid  : target VMA ID
- * @size   : requested size
- * @newrg  : returned free region
+/*get_free_vmrg_area - get a free vm region
+ *@caller: caller
+ *@vmaid: ID vm area to alloc memory region
+ *@size: allocated size
  *
- * Find the first free region that can contain @size bytes.
- * The chosen free region is removed or shrunk from the free list.
  */
 int get_free_vmrg_area(struct pcb_t *caller, int vmaid, int size, struct vm_rg_struct *newrg)
 {
-  	struct mm_struct *mm;
-	struct vm_area_struct *cur_vma;
-	struct vm_rg_struct *cur;
-	struct vm_rg_struct *prev = NULL;
+  struct vm_area_struct *cur_vma = get_vma_by_num(caller->mm, vmaid);
 
-	if (caller == NULL || newrg == NULL || size <= 0)
-		return -1;
+  struct vm_rg_struct *rgit = cur_vma->vm_freerg_list;
 
-	mm = caller->mm;
-	if (mm == NULL && caller->krnl != NULL)
-		mm = caller->krnl->mm;
+  if (rgit == NULL)
+    return -1;
 
-	if (mm == NULL)
-		return -1;
+  /* Probe unintialized newrg */
+  newrg->rg_start = newrg->rg_end = -1;
 
-	cur_vma = get_vma_by_num(mm, vmaid);
-	if (cur_vma == NULL)
-		return -1;
+  /* Traverse on list of free vm region to find a fit space */
+  while (rgit != NULL)
+  {
+    if (rgit->rg_start + size <= rgit->rg_end)
+    { /* Current region has enough space */
+      newrg->rg_start = rgit->rg_start;
+      newrg->rg_end = rgit->rg_start + size;
 
-	cur = cur_vma->vm_freerg_list;
+      /* Update left space in chosen region */
+      if (rgit->rg_start + size < rgit->rg_end)
+      {
+        rgit->rg_start = rgit->rg_start + size;
+      }
+      else
+      { /*Use up all space, remove current node */
+        /*Clone next rg node */
+        struct vm_rg_struct *nextrg = rgit->rg_next;
 
-	while (cur != NULL) {
-		if (cur->rg_start + size <= cur->rg_end) {
-			newrg->vmaid = vmaid;
-			newrg->rg_start = cur->rg_start;
-			newrg->rg_end = cur->rg_start + size;
-			newrg->rg_next = NULL;
+        /*Cloning */
+        if (nextrg != NULL)
+        {
+          rgit->rg_start = nextrg->rg_start;
+          rgit->rg_end = nextrg->rg_end;
 
-			/*
-			 * If the free node still has remaining bytes,
-			 * shrink it from the left side.
-			 */
-			if (newrg->rg_end < cur->rg_end) {
-				cur->rg_start = newrg->rg_end;
-			} else {
-				/*
-				 * The free node is fully used, remove it
-				 * from the free list.
-				 */
-				if (prev == NULL)
-					cur_vma->vm_freerg_list = cur->rg_next;
-				else
-					prev->rg_next = cur->rg_next;
+          rgit->rg_next = nextrg->rg_next;
 
-				free(cur);
-			}
+          free(nextrg);
+        }
+        else
+        {                                /*End of free list */
+          rgit->rg_start = rgit->rg_end; // dummy, size 0 region
+          rgit->rg_next = NULL;
+        }
+      }
+      break;
+    }
+    else
+    {
+      rgit = rgit->rg_next; // Traverse next rg
+    }
+  }
 
-			return 0;
-		}
+  if (newrg->rg_start == -1) // new region not found
+    return -1;
 
-		prev = cur;
-		cur = cur->rg_next;
-	}
-
-	return -1;
+  return 0;
 }
 
 // #endif

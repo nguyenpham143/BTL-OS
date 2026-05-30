@@ -132,12 +132,14 @@ int MEMPHY_format(struct memphy_struct *mp, int pagesz)
    struct framephy_struct *newfst, *fst;
    int iter = 0;
 
+   mp->free_fp_list = NULL;
+   mp->used_fp_list = NULL;
+
    if (numfp <= 0)
       return -1;
 
    /* Init head of free framephy list */
    fst = malloc(sizeof(struct framephy_struct));
-   if (fst == NULL) return -1;
    fst->fpn = iter;
    fst->fp_next = NULL;
    fst->owner = NULL;
@@ -177,9 +179,9 @@ int MEMPHY_get_freefp(struct memphy_struct *mp, addr_t *retfpn)
 
 int MEMPHY_dump(struct memphy_struct *mp)
 {
-  /*TODO dump memphy contnt mp->storage
-   *     for tracing the memory content
-   */
+   /*TODO dump memphy content mp->storage
+    *     for tracing the memory content
+    */
    return 0;
 }
 
@@ -203,9 +205,8 @@ int init_memphy(struct memphy_struct *mp, addr_t max_size, int randomflg)
 {
    mp->storage = (BYTE *)malloc(max_size * sizeof(BYTE));
    mp->maxsz = max_size;
-   mp->free_fp_list = NULL;
-   mp->used_fp_list = NULL;
    memset(mp->storage, 0, max_size * sizeof(BYTE));
+
 #ifdef MM64
    MEMPHY_format(mp, PAGING64_PAGESZ);
 #else
