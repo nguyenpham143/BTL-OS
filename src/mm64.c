@@ -375,6 +375,9 @@ addr_t alloc_pages_range(struct pcb_t *caller, int req_pgnum, struct framephy_st
       pte_set_swap(caller, vicpgn, caller->krnl->active_mswp_id, swpfpn);
 
       fpn = vicfpn;
+
+      printf("[ALLOC_REPLACE] no free RAM, victim PGN=%lu\n", vicpgn);
+      printf("[ALLOC_REPLACE] victim FPN=%lu -> SWP FPN=%lu\n", vicfpn, swpfpn);
     }
 
     // Zero-fill

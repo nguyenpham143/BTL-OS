@@ -283,6 +283,12 @@ int pg_getpage(struct mm_struct *mm, int pgn, int *fpn, struct pcb_t *caller)
     pte_set_fpn(caller, pgn, vicfpn);
 
     enlist_pgn_node(&caller->mm->fifo_pgn, pgn);
+
+    printf("[PAGE_FAULT] target PGN=%d is swapped at SWP FPN=%lu\n",
+       pgn, tgtfpn);
+
+    printf("[SWAP_IN] victim PGN=%lu, victim FPN=%lu, new SWP FPN=%lu\n",
+       vicpgn, vicfpn, swpfpn);
   }
 
   *fpn = PAGING_FPN(pte_get_entry(caller, pgn));

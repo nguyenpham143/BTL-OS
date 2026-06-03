@@ -1,0 +1,11 @@
+1 10
+alloc 4096 0
+write 10 0 20
+alloc 4096 1
+write 20 1 20
+alloc 4096 2
+write 30 2 20
+read 0 20 3
+read 1 20 4
+read 2 20 5
+calc
